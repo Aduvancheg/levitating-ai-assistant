@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: brain-rpi5
+Version: 0.1.0
+Summary: Brain node logic for Raspberry Pi 5 levitation control
+Requires-Python: >=3.10
+Requires-Dist: pytest>=7.0.0
+Requires-Dist: simple-pid>=2.0.0
+Requires-Dist: pyserial>=3.5
+Requires-Dist: smbus2>=0.4.0
+Requires-Dist: numpy>=1.24.0

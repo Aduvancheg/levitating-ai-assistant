@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brain-rpi5"
+version = "0.1.0"
+description = "Brain node logic for Raspberry Pi 5 levitation control"
+requires-python = ">=3.10"
+dependencies = [
+    "pytest>=7.0.0",
+    "simple-pid>=2.0.0",
+    "pyserial>=3.5",
+    "smbus2>=0.4.0",
+    "numpy>=1.24.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

@@ -1,0 +1,5 @@
+{
+  "agent_mode": "grounded",
+  "prevent_environment_collapse": true,
+  "execution_approval": "always_ask"
+}
