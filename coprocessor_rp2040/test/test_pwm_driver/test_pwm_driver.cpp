@@ -3,7 +3,7 @@
  * @brief Unit tests for RP2040 PWM driver — boundary, ramp, safety limits.
  */
 
-#include "../src/pwm_driver.h"
+#include "../../src/pwm_driver.h"
 #include <assert.h>
 #include <stdio.h>
 

@@ -1,30 +1,30 @@
 /**
  * @file pwm_driver.cpp
- * @brief RP2040-Zero hardware PWM driver with safety clamping and Smooth Ramp-Up.
+ * @brief RP2040-Zero hardware PWM driver using Pico C/C++ SDK (Zero Jitter).
  *
- * On Arduino/RP2040 builds, uses the Pico SDK `hardware/pwm.h` for deterministic
- * frequency control.  On native (host) builds, the hardware calls are stubbed
- * so that pure-logic unit tests can run on the development machine.
+ * On Pico SDK RP2040 builds, uses hardware/pwm.h registers & hardware APIs
+ * for deterministic frequency and 10-bit resolution control.
+ * On native (host) builds, hardware calls are stubbed out for host unit tests.
  */
 
 #include "pwm_driver.h"
 
 /* ---- Internal state ----------------------------------------------- */
-static uint8_t  channel_pins[PWM_CHANNELS]  = {0, 1, 2, 3, 4};
+static uint8_t  channel_pins[PWM_CHANNELS]   = {0, 1, 2, 3, 4};
 static uint16_t channel_duties[PWM_CHANNELS] = {0, 0, 0, 0, 0};
 static uint32_t configured_frequency = 0;
 
-/* ---- Platform-specific PWM back-end ------------------------------- */
-#if defined(ARDUINO) && defined(TARGET_RP2040)
+#if defined(TARGET_RP2040) || defined(PICO_BOARD) || defined(PICO_ON_DEVICE)
 /*
- * RP2040 Hardware PWM via Pico SDK.
- * Each GPIO maps to a PWM slice + channel (A or B).
- * We configure the wrap value for 10-bit resolution and compute
- * the clock divider from the system clock (usually 125 MHz).
+ * Bare-metal RP2040 Hardware PWM via Pico C/C++ SDK hardware APIs.
+ * Maps GPIO pin to hardware PWM slice & channel (A/B).
+ * Computes fractional clock divider for requested high frequency (>20 kHz)
+ * and configures 10-bit TOP register (0..1023).
  */
+#include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
-#include <Arduino.h>
+#include "hardware/gpio.h"
 
 static void hw_pwm_init_pin(uint8_t pin, uint32_t freq_hz) {
     gpio_set_function(pin, GPIO_FUNC_PWM);
@@ -36,7 +36,7 @@ static void hw_pwm_init_pin(uint8_t pin, uint32_t freq_hz) {
     if (divider < 1.0f) divider = 1.0f;
 
     pwm_set_clkdiv(slice, divider);
-    pwm_set_wrap(slice, MAX_DUTY_CYCLE);  /* 10-bit: 0..1023 */
+    pwm_set_wrap(slice, MAX_DUTY_CYCLE);  /* 10-bit wrap counter: 0..1023 */
     pwm_set_chan_level(slice, pwm_gpio_to_channel(pin), 0);
     pwm_set_enabled(slice, true);
 }
@@ -46,23 +46,8 @@ static void hw_pwm_set(uint8_t pin, uint16_t duty) {
     pwm_set_chan_level(slice, pwm_gpio_to_channel(pin), duty);
 }
 
-#elif defined(ARDUINO)
-/* Fallback for generic Arduino boards (e.g. ESP32 test builds) */
-#include <Arduino.h>
-
-static void hw_pwm_init_pin(uint8_t pin, uint32_t freq_hz) {
-    (void)freq_hz;
-    pinMode(pin, OUTPUT);
-    analogWriteResolution(PWM_RESOLUTION_BITS);
-    analogWrite(pin, 0);
-}
-
-static void hw_pwm_set(uint8_t pin, uint16_t duty) {
-    analogWrite(pin, duty);
-}
-
 #else
-/* Native / host build — no hardware, just state tracking for tests */
+/* Native / host build — no hardware, pure state tracking for unit tests */
 static void hw_pwm_init_pin(uint8_t pin, uint32_t freq_hz) {
     (void)pin; (void)freq_hz;
 }
@@ -130,7 +115,6 @@ uint16_t ramp_pwm_duty(uint8_t channel, uint16_t target, uint16_t step) {
         uint16_t next = (diff < step) ? clamped_target : (current - step);
         set_pwm_duty(channel, next);
     }
-    /* else: already at target, nothing to do */
 
     return channel_duties[channel];
 }

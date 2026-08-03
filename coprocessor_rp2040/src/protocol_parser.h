@@ -53,12 +53,13 @@ uint8_t calculate_crc8(const uint8_t *data, size_t length);
  * of aborting — this avoids losing valid packets that follow a
  * corrupted one in a noisy stream.
  *
- * @param buffer      Input byte stream.
- * @param length      Number of bytes available.
- * @param out_packet  Parsed result (valid flag set on success).
+ * @param buffer        Input byte stream.
+ * @param length        Number of bytes available.
+ * @param out_packet    Parsed result (valid flag set on success).
+ * @param out_consumed  Optional pointer to receive count of bytes consumed up to end of valid packet.
  * @return true if a valid packet was found, false otherwise.
  */
-bool parse_byte_stream(const uint8_t *buffer, size_t length, PacketData *out_packet);
+bool parse_byte_stream(const uint8_t *buffer, size_t length, PacketData *out_packet, size_t *out_consumed = NULL);
 
 /**
  * @brief Serialize 5 duty-cycle values into a binary packet.

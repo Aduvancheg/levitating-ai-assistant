@@ -3,7 +3,7 @@
  * @brief Unit tests for binary protocol parser — CRC, corruption, ACK.
  */
 
-#include "../src/protocol_parser.h"
+#include "../../src/protocol_parser.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
