@@ -53,7 +53,8 @@ size_t serialize_packet(const uint16_t duties[NUM_PWM_VALS], uint8_t *out_buffer
 
 /* ---- Parse byte-stream, scanning past CRC errors ------------------ */
 
-bool parse_byte_stream(const uint8_t *buffer, size_t length, PacketData *out_packet) {
+bool parse_byte_stream(const uint8_t *buffer, size_t length, PacketData *out_packet, size_t *out_consumed) {
+    if (out_consumed) *out_consumed = 0;
     if (buffer == nullptr || out_packet == nullptr || length < TOTAL_PACKET_SIZE) {
         if (out_packet) out_packet->valid = false;
         return false;
@@ -90,6 +91,9 @@ bool parse_byte_stream(const uint8_t *buffer, size_t length, PacketData *out_pac
             out_packet->duty_cycles[k] = duty > 1023 ? 1023 : duty;
         }
         out_packet->valid = true;
+        if (out_consumed) {
+            *out_consumed = i + TOTAL_PACKET_SIZE;
+        }
         return true;
     }
 

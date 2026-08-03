@@ -1,162 +1,143 @@
 /**
  * @file main.cpp
- * @brief RP2040-Zero Base Coprocessor — Main firmware entry point.
+ * @brief RP2040-Zero Base Coprocessor — Bare-metal Pico C/C++ SDK entry point (Zero Jitter).
  *
  * Responsibilities:
- *   1. Receive 5× duty-cycle commands from RPi 5 via high-speed UART.
- *   2. Apply Smooth Ramp-Up to each channel (no inrush spikes).
- *   3. Drive 5 hardware PWM outputs through TC4427 gate drivers.
- *   4. Send ACK/NAK back to RPi 5 for each received packet.
- *   5. Hardware Watchdog: if no valid packet arrives within WATCHDOG_TIMEOUT_MS,
- *      all PWM channels are killed and the MCU resets.
- *
- * Communication link: UART1 @ 921600 baud (architecture §2 latency < 1 ms).
+ *   1. High-speed UART receiver from RPi 5 (@ 921600 baud, non-blocking stream parsing).
+ *   2. Non-blocking Smooth Ramp-Up timer state machine (1 ms tick).
+ *   3. 5-channel hardware PWM generator via TC4427 drivers (>20 kHz, 10-bit).
+ *   4. Fast binary ACK/NAK response builder.
+ *   5. Dual watchdog protection:
+ *        - Soft Comm Watchdog (FSM_HEARTBEAT_TIMEOUT_US): safe landing if link lost.
+ *        - Hardware Watchdog (500 ms): hardware MCU reset on EMI lock-up.
+ *   6. OTA lock and anomaly filtering via coprocessor_fsm.
  */
 
-#if defined(ARDUINO)
-#include <Arduino.h>
 #include "pwm_driver.h"
 #include "protocol_parser.h"
+#include "coprocessor_fsm.h"
 
-/* ---- Configuration ------------------------------------------------ */
+#if defined(TARGET_RP2040) || defined(PICO_BOARD) || defined(PICO_ON_DEVICE)
+#include "pico/stdlib.h"
+#include "hardware/uart.h"
+#include "hardware/watchdog.h"
+#include "hardware/timer.h"
+#include "hardware/gpio.h"
+#include "pico/time.h"
 
-/** GPIO pins for 5 PWM channels driving TC4427 gate drivers.
- *  TODO: Update to match final PCB routing.                           */
-static const uint8_t PWM_PINS[PWM_CHANNELS] = {0, 1, 2, 3, 4};
+#define UART_ID          uart1
+#define UART_BAUD_RATE   921600
+#define UART_TX_PIN      4
+#define UART_RX_PIN      5
 
-/** UART baud rate — 921600 provides ~92 KB/s, enough for 800 Hz × 15B
- *  packets with margin.  Must match RPi 5 serial configuration.       */
-static const uint32_t UART_BAUD = 921600;
-
-/** PWM carrier frequency in Hz (> 20 kHz to be inaudible).            */
+static const uint8_t PWM_PINS[PWM_CHANNELS] = {0, 1, 2, 3, 6};  /* Hardware PWM GPIOs */
 static const uint32_t PWM_FREQ_HZ = 25000;
-
-/** Communication watchdog: if no valid packet is received within this
- *  window, assume link loss and execute safe shutdown (all PWM → 0).  */
-static const uint32_t COMM_WATCHDOG_TIMEOUT_MS = 100;
-
-/** Ramp tick interval: how often ramp_pwm_duty() is called.           */
-static const uint32_t RAMP_TICK_INTERVAL_US = 1000;  /* 1 ms */
-
-/* ---- Runtime state ------------------------------------------------ */
+static const uint64_t RAMP_TICK_INTERVAL_US = 1000;  /* 1 ms */
 
 static uint8_t rx_buffer[TOTAL_PACKET_SIZE * 3];
 static size_t  rx_index = 0;
 
-/** Target duties received from RPi 5 (ramped toward gradually).       */
-static uint16_t target_duties[PWM_CHANNELS] = {0, 0, 0, 0, 0};
+static uint64_t last_ramp_tick_us = 0;
 
-/** Timestamp of the last successfully parsed packet (millis).         */
-static uint32_t last_valid_packet_ms = 0;
+int main(void) {
+    /* Initialize stdio / Pico SDK core */
+    stdio_init_all();
 
-/** Ramp timer (micros).                                               */
-static uint32_t last_ramp_tick_us = 0;
+    /* Initialize high-speed UART (UART1 @ 921600 baud) */
+    uart_init(UART_ID, UART_BAUD_RATE);
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+    uart_set_hw_flow(UART_ID, false, false);
+    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
+    uart_set_fifo_enabled(UART_ID, true);
 
-/** Communication-loss flag — cleared when a valid packet arrives.     */
-static bool comm_lost = false;
-
-/* ---- Hardware Watchdog -------------------------------------------- */
-#if defined(TARGET_RP2040)
-#include "hardware/watchdog.h"
-
-static void wdt_init(void) {
-    /* 500 ms hardware WDT — if the main loop hangs for more than
-     * half a second (e.g. due to EMI lock-up), the MCU resets.
-     * This is the last line of defence: coils cannot stay powered
-     * indefinitely.                                                   */
-    watchdog_enable(500, true);  /* 500 ms, pause on debug */
-}
-
-static void wdt_feed(void) {
-    watchdog_update();
-}
-#else
-/* Non-RP2040 Arduino boards — stub */
-static void wdt_init(void) {}
-static void wdt_feed(void) {}
-#endif
-
-/* ---- Safe shutdown ------------------------------------------------ */
-
-static void safe_shutdown(void) {
-    kill_all_pwm();
-    for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
-        target_duties[i] = 0;
-    }
-    comm_lost = true;
-}
-
-/* ---- Arduino entry points ---------------------------------------- */
-
-void setup() {
-    Serial.begin(115200);          /* Debug console */
-    Serial1.begin(UART_BAUD);      /* High-speed link from RPi 5 */
-
+    /* Initialize 5 hardware PWM channels (>20 kHz, 10-bit) */
     if (!init_pwm_channels(PWM_PINS, PWM_FREQ_HZ)) {
-        Serial.println(F("[FATAL] PWM init failed — frequency below 20 kHz"));
-        while (true) { /* halt */ }
+        kill_all_pwm();
+        while (true) {
+            tight_loop_contents();
+        }
     }
 
-    last_valid_packet_ms = millis();
-    last_ramp_tick_us    = micros();
+    /* Initialize 500 ms Hardware Watchdog */
+    watchdog_enable(500, 1);
 
-    wdt_init();
-    Serial.println(F("[OK] RP2040 Base coprocessor ready"));
-}
+    uint64_t now_us = time_us_64();
+    fsm_init(now_us);
+    last_ramp_tick_us = now_us;
 
-void loop() {
-    uint32_t now_ms = millis();
-    uint32_t now_us = micros();
+    /* Main zero-jitter bare-metal execution loop */
+    while (true) {
+        now_us = time_us_64();
 
-    /* ---- 1. Feed hardware watchdog -------------------------------- */
-    wdt_feed();
+        /* 1. Feed Hardware Watchdog */
+        watchdog_update();
 
-    /* ---- 2. Receive UART bytes ------------------------------------ */
-    while (Serial1.available() > 0) {
-        uint8_t byte_in = (uint8_t)Serial1.read();
+        /* 2. Non-blocking UART RX processing */
+        while (uart_is_readable(UART_ID)) {
+            uint8_t byte_in = uart_getc(UART_ID);
 
-        if (rx_index < sizeof(rx_buffer)) {
-            rx_buffer[rx_index++] = byte_in;
-        } else {
-            /* Ring-shift on overflow to keep the newest bytes */
-            memmove(rx_buffer, rx_buffer + 1, sizeof(rx_buffer) - 1);
-            rx_buffer[sizeof(rx_buffer) - 1] = byte_in;
+            if (rx_index < sizeof(rx_buffer)) {
+                rx_buffer[rx_index++] = byte_in;
+            } else {
+                /* Ring-shift on buffer full to retain latest bytes */
+                memmove(rx_buffer, rx_buffer + 1, sizeof(rx_buffer) - 1);
+                rx_buffer[sizeof(rx_buffer) - 1] = byte_in;
+            }
+
+            /* Attempt stream parse when frame size threshold met */
+            if (rx_index >= TOTAL_PACKET_SIZE) {
+                PacketData packet;
+                size_t consumed = 0;
+                if (parse_byte_stream(rx_buffer, rx_index, &packet, &consumed)) {
+                    /* Delegate to FSM: anomaly check + OTA lock + heartbeat reset */
+                    uint8_t ack_status;
+                    if (fsm_feed_packet(&packet, now_us)) {
+                        ack_status = ACK_STATUS_OK;
+                    } else {
+                        ack_status = ACK_STATUS_NAK;
+                    }
+
+                    uint8_t ack_buf[ACK_PACKET_SIZE];
+                    build_ack_packet(ack_status, ack_buf, sizeof(ack_buf));
+                    uart_write_blocking(UART_ID, ack_buf, ACK_PACKET_SIZE);
+
+                    if (consumed > 0 && consumed <= rx_index) {
+                        size_t remaining = rx_index - consumed;
+                        if (remaining > 0) {
+                            memmove(rx_buffer, rx_buffer + consumed, remaining);
+                        }
+                        rx_index = remaining;
+                    } else {
+                        rx_index = 0;
+                    }
+                }
+            }
         }
 
-        /* Attempt parse once we have enough bytes */
-        if (rx_index >= TOTAL_PACKET_SIZE) {
-            PacketData packet;
-            if (parse_byte_stream(rx_buffer, rx_index, &packet)) {
-                /* Valid packet — update targets and send ACK */
-                for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
-                    target_duties[i] = packet.duty_cycles[i];
-                }
+        /* 3. FSM tick: heartbeat watchdog + state transitions */
+        fsm_tick(now_us);
 
-                uint8_t ack_buf[ACK_PACKET_SIZE];
-                build_ack_packet(ACK_STATUS_OK, ack_buf, sizeof(ack_buf));
-                Serial1.write(ack_buf, ACK_PACKET_SIZE);
+        /* 4. Non-blocking Smooth Ramp tick (every 1 ms) */
+        if (now_us - last_ramp_tick_us >= RAMP_TICK_INTERVAL_US) {
+            last_ramp_tick_us = now_us;
 
-                last_valid_packet_ms = now_ms;
-                comm_lost = false;
-                rx_index = 0;  /* Reset buffer after successful parse */
+            const uint16_t *targets = fsm_get_target_duties();
+            for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
+                ramp_pwm_duty(i, targets[i], RAMP_STEP_DEFAULT);
             }
         }
     }
 
-    /* ---- 3. Communication watchdog check -------------------------- */
-    if (!comm_lost && (now_ms - last_valid_packet_ms > COMM_WATCHDOG_TIMEOUT_MS)) {
-        Serial.println(F("[WARN] Comm watchdog — safe shutdown"));
-        safe_shutdown();
-    }
-
-    /* ---- 4. Smooth Ramp-Up tick (every 1 ms) ---------------------- */
-    if (now_us - last_ramp_tick_us >= RAMP_TICK_INTERVAL_US) {
-        last_ramp_tick_us = now_us;
-
-        for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
-            ramp_pwm_duty(i, target_duties[i], RAMP_STEP_DEFAULT);
-        }
-    }
+    return 0;
 }
 
-#endif /* ARDUINO */
+#else
+/* Native host test entry stub — disabled under UNIT_TEST to avoid
+ * duplicate main() when PlatformIO builds src/ alongside test files. */
+#ifndef UNIT_TEST
+int main(void) {
+    return 0;
+}
+#endif  /* UNIT_TEST */
+#endif
