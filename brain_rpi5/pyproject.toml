@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
+pythonpath = [".", "..", "src"]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"

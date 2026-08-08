@@ -54,6 +54,7 @@
 #include "../../src/protocol_parser.h"
 #include "../../src/pwm_driver.h"
 #include "../../src/coprocessor_fsm.h"
+#include <unity.h>
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
@@ -723,13 +724,18 @@ static void test_e2e_heartbeat_recovery_after_reconnect(void) {
     fsm_tick(t);
     assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
 
-    /* Wi-Fi reconnects: a new valid packet arrives */
+    /* Wi-Fi reconnects: new valid packets arrive */
     t += 50000;  /* 50 ms later */
     uint16_t recovery[NUM_PWM_VALS] = {250, 250, 250, 250, 250};
     serialize_packet(recovery, wire_buf, sizeof(wire_buf));
     consumed = 0;
     assert(parse_byte_stream(wire_buf, sizeof(wire_buf), &parsed, &consumed));
-    assert(fsm_feed_packet(&parsed, t));
+
+    /* Due to hysteresis, we need FSM_RECOVERY_THRESHOLD consecutive packets */
+    for (int i = 0; i < FSM_RECOVERY_THRESHOLD; i++) {
+        assert(fsm_feed_packet(&parsed, t));
+        t += 1000; /* 1 ms apart */
+    }
 
     /* FSM must return to ACTIVE */
     assert(fsm_get_state() == FSM_STATE_ACTIVE);
@@ -1108,6 +1114,81 @@ static void test_e2e_anomaly_first_packet_always_accepted(void) {
 
 
 /* ===================================================================
+ * SCENARIO: Ramp Bypass & Hysteresis Checks
+ * =================================================================== */
+
+static void test_e2e_active_bypasses_ramp(void) {
+    reset_pwm();
+    uint64_t t = 0;
+    fsm_init(t);
+    assert(fsm_get_state() == FSM_STATE_ACTIVE);
+    assert(fsm_should_ramp() == false);
+    printf("[PASS] test_e2e_active_bypasses_ramp\n");
+}
+
+static void test_e2e_safe_landing_uses_ramp(void) {
+    reset_pwm();
+    uint64_t t = 0;
+    fsm_init(t);
+    t += FSM_HEARTBEAT_TIMEOUT_US + 1;
+    fsm_tick(t);
+    assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+    assert(fsm_should_ramp() == true);
+    printf("[PASS] test_e2e_safe_landing_uses_ramp\n");
+}
+
+static void test_e2e_yoyo_single_packet_stays_landing(void) {
+    reset_pwm();
+    uint64_t t = 0;
+    fsm_init(t);
+    
+    t += FSM_HEARTBEAT_TIMEOUT_US + 1;
+    fsm_tick(t);
+    assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+
+    uint16_t recovery[NUM_PWM_VALS] = {250, 250, 250, 250, 250};
+    uint8_t wire_buf[TOTAL_PACKET_SIZE];
+    serialize_packet(recovery, wire_buf, sizeof(wire_buf));
+    PacketData parsed;
+    size_t consumed = 0;
+    parse_byte_stream(wire_buf, sizeof(wire_buf), &parsed, &consumed);
+    
+    fsm_feed_packet(&parsed, t);
+    
+    /* Still in SAFE_LANDING due to hysteresis */
+    assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+    printf("[PASS] test_e2e_yoyo_single_packet_stays_landing\n");
+}
+
+static void test_e2e_yoyo_recovery_requires_threshold(void) {
+    reset_pwm();
+    uint64_t t = 0;
+    fsm_init(t);
+    
+    t += FSM_HEARTBEAT_TIMEOUT_US + 1;
+    fsm_tick(t);
+    assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+
+    uint16_t recovery[NUM_PWM_VALS] = {250, 250, 250, 250, 250};
+    uint8_t wire_buf[TOTAL_PACKET_SIZE];
+    serialize_packet(recovery, wire_buf, sizeof(wire_buf));
+    PacketData parsed;
+    size_t consumed = 0;
+    parse_byte_stream(wire_buf, sizeof(wire_buf), &parsed, &consumed);
+    
+    for (int i = 0; i < FSM_RECOVERY_THRESHOLD - 1; i++) {
+        fsm_feed_packet(&parsed, t);
+        t += 1000;
+        assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+    }
+    
+    fsm_feed_packet(&parsed, t);
+    assert(fsm_get_state() == FSM_STATE_ACTIVE);
+    
+    printf("[PASS] test_e2e_yoyo_recovery_requires_threshold\n");
+}
+
+/* ===================================================================
  * SCENARIO BONUS: Full 45-minute session simulation (mini version)
  *
  * Simulates a condensed version of the full Deep Work session:
@@ -1167,58 +1248,56 @@ static void test_e2e_full_session_sweep(void) {
  * Test Runner
  * =================================================================== */
 
+void setUp(void) {}
+void tearDown(void) {}
+
 int main(void) {
-    printf("=== Running E2E Integration Tests ===\n");
-    printf("  (business_e2e_scenarios.md coverage)\n\n");
+    UNITY_BEGIN();
 
     /* Scenario 1: Deep Work — Smooth Ramp-Down */
-    printf("--- Scenario 1: Deep Work (Smooth Ramp-Down) ---\n");
-    test_e2e_deep_work_smooth_ramp_down();
-    test_e2e_deep_work_ramp_monotonicity_per_tick();
+    RUN_TEST(test_e2e_deep_work_smooth_ramp_down);
+    RUN_TEST(test_e2e_deep_work_ramp_monotonicity_per_tick);
 
     /* Scenario 2: Crafting Nod — ACTION_NOD Spike */
-    printf("\n--- Scenario 2: Crafting Nod (ACTION_NOD Spike) ---\n");
-    test_e2e_crafting_nod_spike_impulse();
-    test_e2e_crafting_nod_spike_clamped();
+    RUN_TEST(test_e2e_crafting_nod_spike_impulse);
+    RUN_TEST(test_e2e_crafting_nod_spike_clamped);
 
     /* Scenario 3: Storytelling — High-Freq Oscillation */
-    printf("\n--- Scenario 3: Storytelling (High-Freq Oscillation) ---\n");
-    test_e2e_storytelling_tremor_no_drop();
-    test_e2e_storytelling_calm_sway();
+    RUN_TEST(test_e2e_storytelling_tremor_no_drop);
+    RUN_TEST(test_e2e_storytelling_calm_sway);
 
     /* EMI Garbage Rejection */
-    printf("\n--- EMI Garbage Rejection ---\n");
-    test_e2e_emi_garbage_preserves_pwm();
-    test_e2e_emi_bitflip_crc_rejection();
-    test_e2e_emi_recovery_after_garbage();
+    RUN_TEST(test_e2e_emi_garbage_preserves_pwm);
+    RUN_TEST(test_e2e_emi_bitflip_crc_rejection);
+    RUN_TEST(test_e2e_emi_recovery_after_garbage);
 
     /* Scenario 7: Wi-Fi Heartbeat Loss — Safe Landing */
-    printf("\n--- Scenario 7: Wi-Fi Heartbeat Loss (Safe Landing) ---\n");
-    test_e2e_heartbeat_loss_triggers_safe_landing();
-    test_e2e_heartbeat_loss_ramp_down_completes();
-    test_e2e_heartbeat_recovery_after_reconnect();
+    RUN_TEST(test_e2e_heartbeat_loss_triggers_safe_landing);
+    RUN_TEST(test_e2e_heartbeat_loss_ramp_down_completes);
+    RUN_TEST(test_e2e_heartbeat_recovery_after_reconnect);
 
     /* Scenario 9: OTA In-Air — Firmware Update */
-    printf("\n--- Scenario 9: OTA In-Air (Firmware Update) ---\n");
-    test_e2e_ota_locks_duty_at_safe_level();
-    test_e2e_ota_rejects_dynamic_packets();
-    test_e2e_ota_success_resumes_active();
+    RUN_TEST(test_e2e_ota_locks_duty_at_safe_level);
+    RUN_TEST(test_e2e_ota_rejects_dynamic_packets);
+    RUN_TEST(test_e2e_ota_success_resumes_active);
 
     /* Scenario 10: Smooth Morning Boot — Ramp-Up */
-    printf("\n--- Scenario 10: Smooth Morning Boot (Ramp-Up) ---\n");
-    test_e2e_morning_boot_smooth_ramp_up();
-    test_e2e_morning_boot_ramp_up_capped();
+    RUN_TEST(test_e2e_morning_boot_smooth_ramp_up);
+    RUN_TEST(test_e2e_morning_boot_ramp_up_capped);
 
     /* Scenario 11: Sensor Anomaly — False Reading Rejection */
-    printf("\n--- Scenario 11: Sensor Anomaly (False Reading Rejection) ---\n");
-    test_e2e_anomaly_rejects_impossible_jump();
-    test_e2e_anomaly_accepts_normal_correction();
-    test_e2e_anomaly_first_packet_always_accepted();
+    RUN_TEST(test_e2e_anomaly_rejects_impossible_jump);
+    RUN_TEST(test_e2e_anomaly_accepts_normal_correction);
+    RUN_TEST(test_e2e_anomaly_first_packet_always_accepted);
+
+    /* Ramp Bypass & Hysteresis Checks */
+    RUN_TEST(test_e2e_active_bypasses_ramp);
+    RUN_TEST(test_e2e_safe_landing_uses_ramp);
+    RUN_TEST(test_e2e_yoyo_single_packet_stays_landing);
+    RUN_TEST(test_e2e_yoyo_recovery_requires_threshold);
 
     /* Bonus: Full session sweep */
-    printf("\n--- Bonus: Full Session Sweep ---\n");
-    test_e2e_full_session_sweep();
+    RUN_TEST(test_e2e_full_session_sweep);
 
-    printf("\n=== All E2E Integration Tests PASSED (21 tests) ===\n");
-    return 0;
+    return UNITY_END();
 }

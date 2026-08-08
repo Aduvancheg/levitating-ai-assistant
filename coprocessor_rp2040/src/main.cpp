@@ -16,6 +16,7 @@
 #include "pwm_driver.h"
 #include "protocol_parser.h"
 #include "coprocessor_fsm.h"
+#include "ring_buffer.h"
 
 #if defined(TARGET_RP2040) || defined(PICO_BOARD) || defined(PICO_ON_DEVICE)
 #include "pico/stdlib.h"
@@ -34,8 +35,8 @@ static const uint8_t PWM_PINS[PWM_CHANNELS] = {0, 1, 2, 3, 6};  /* Hardware PWM 
 static const uint32_t PWM_FREQ_HZ = 25000;
 static const uint64_t RAMP_TICK_INTERVAL_US = 1000;  /* 1 ms */
 
-static uint8_t rx_buffer[TOTAL_PACKET_SIZE * 3];
-static size_t  rx_index = 0;
+static uint8_t rx_backing_buffer[TOTAL_PACKET_SIZE * 3];
+static RingBuffer uart_rb;
 
 static uint64_t last_ramp_tick_us = 0;
 
@@ -65,6 +66,7 @@ int main(void) {
     uint64_t now_us = time_us_64();
     fsm_init(now_us);
     last_ramp_tick_us = now_us;
+    rb_init(&uart_rb, rx_backing_buffer, sizeof(rx_backing_buffer));
 
     /* Main zero-jitter bare-metal execution loop */
     while (true) {
@@ -76,20 +78,16 @@ int main(void) {
         /* 2. Non-blocking UART RX processing */
         while (uart_is_readable(UART_ID)) {
             uint8_t byte_in = uart_getc(UART_ID);
-
-            if (rx_index < sizeof(rx_buffer)) {
-                rx_buffer[rx_index++] = byte_in;
-            } else {
-                /* Ring-shift on buffer full to retain latest bytes */
-                memmove(rx_buffer, rx_buffer + 1, sizeof(rx_buffer) - 1);
-                rx_buffer[sizeof(rx_buffer) - 1] = byte_in;
-            }
+            rb_push(&uart_rb, byte_in);
 
             /* Attempt stream parse when frame size threshold met */
-            if (rx_index >= TOTAL_PACKET_SIZE) {
+            if (rb_count(&uart_rb) >= TOTAL_PACKET_SIZE) {
+                uint8_t linear_buf[TOTAL_PACKET_SIZE * 3];
+                size_t lin_len = rb_linearize(&uart_rb, linear_buf, sizeof(linear_buf));
+
                 PacketData packet;
                 size_t consumed = 0;
-                if (parse_byte_stream(rx_buffer, rx_index, &packet, &consumed)) {
+                if (parse_byte_stream(linear_buf, lin_len, &packet, &consumed)) {
                     /* Delegate to FSM: anomaly check + OTA lock + heartbeat reset */
                     uint8_t ack_status;
                     if (fsm_feed_packet(&packet, now_us)) {
@@ -102,14 +100,8 @@ int main(void) {
                     build_ack_packet(ack_status, ack_buf, sizeof(ack_buf));
                     uart_write_blocking(UART_ID, ack_buf, ACK_PACKET_SIZE);
 
-                    if (consumed > 0 && consumed <= rx_index) {
-                        size_t remaining = rx_index - consumed;
-                        if (remaining > 0) {
-                            memmove(rx_buffer, rx_buffer + consumed, remaining);
-                        }
-                        rx_index = remaining;
-                    } else {
-                        rx_index = 0;
+                    if (consumed > 0) {
+                        rb_consume(&uart_rb, consumed);
                     }
                 }
             }
@@ -123,8 +115,14 @@ int main(void) {
             last_ramp_tick_us = now_us;
 
             const uint16_t *targets = fsm_get_target_duties();
+            bool use_ramp = fsm_should_ramp();
+
             for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
-                ramp_pwm_duty(i, targets[i], RAMP_STEP_DEFAULT);
+                if (use_ramp) {
+                    ramp_pwm_duty(i, targets[i], RAMP_STEP_DEFAULT);
+                } else {
+                    set_pwm_duty(i, targets[i]);
+                }
             }
         }
     }

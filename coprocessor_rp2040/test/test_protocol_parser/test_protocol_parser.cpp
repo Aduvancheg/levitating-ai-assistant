@@ -4,34 +4,36 @@
  */
 
 #include "../../src/protocol_parser.h"
-#include <assert.h>
+#include <unity.h>
 #include <stdio.h>
 #include <string.h>
 
-void test_ideal_packet_parsing() {
+void setUp(void) {
+    // Empty
+}
+
+void tearDown(void) {
+    // Empty
+}
+
+void test_ideal_packet_parsing(void) {
     uint16_t original_duties[NUM_PWM_VALS] = {100, 250, 512, 800, 1023};
     uint8_t buffer[TOTAL_PACKET_SIZE];
 
     size_t written = serialize_packet(original_duties, buffer, sizeof(buffer));
-    assert(written == TOTAL_PACKET_SIZE);
+    TEST_ASSERT_EQUAL_INT(TOTAL_PACKET_SIZE, written);
 
     PacketData parsed_packet;
     bool success = parse_byte_stream(buffer, written, &parsed_packet);
-    assert(success == true);
-    assert(parsed_packet.valid == true);
+    TEST_ASSERT_TRUE(success);
+    TEST_ASSERT_TRUE(parsed_packet.valid);
 
     for (size_t i = 0; i < NUM_PWM_VALS; i++) {
-        assert(parsed_packet.duty_cycles[i] == original_duties[i]);
+        TEST_ASSERT_EQUAL_UINT16(original_duties[i], parsed_packet.duty_cycles[i]);
     }
-    printf("[PASS] test_ideal_packet_parsing\n");
 }
 
-void test_corrupted_crc_continues_scanning() {
-    /*
-     * Place a corrupted packet followed by a valid one.
-     * The parser should skip the corrupt frame and find the valid one.
-     * (This was a bug: the original parser returned false on first CRC mismatch.)
-     */
+void test_corrupted_crc_continues_scanning(void) {
     uint16_t duties1[NUM_PWM_VALS] = {10, 20, 30, 40, 50};
     uint16_t duties2[NUM_PWM_VALS] = {100, 200, 300, 400, 500};
 
@@ -46,103 +48,85 @@ void test_corrupted_crc_continues_scanning() {
 
     PacketData parsed;
     bool success = parse_byte_stream(combined, sizeof(combined), &parsed);
-    assert(success == true);
-    assert(parsed.valid == true);
+    TEST_ASSERT_TRUE(success);
+    TEST_ASSERT_TRUE(parsed.valid);
 
     /* Should have found the SECOND packet */
     for (size_t i = 0; i < NUM_PWM_VALS; i++) {
-        assert(parsed.duty_cycles[i] == duties2[i]);
+        TEST_ASSERT_EQUAL_UINT16(duties2[i], parsed.duty_cycles[i]);
     }
-    printf("[PASS] test_corrupted_crc_continues_scanning\n");
 }
 
-void test_garbage_stream_rejected() {
+void test_garbage_stream_rejected(void) {
     uint8_t garbage[30];
-    memset(garbage, 0xEE, sizeof(garbage));
+    memset(garbage, 0x77, sizeof(garbage));
 
     PacketData parsed;
     bool success = parse_byte_stream(garbage, sizeof(garbage), &parsed);
-    assert(success == false);
-    assert(parsed.valid == false);
-
-    printf("[PASS] test_garbage_stream_rejected\n");
+    TEST_ASSERT_FALSE(success);
+    TEST_ASSERT_FALSE(parsed.valid);
 }
 
-void test_packet_after_garbage() {
-    uint16_t duties[NUM_PWM_VALS] = {50, 100, 150, 200, 250};
-    uint8_t combined[40];
-    memset(combined, 0xFF, 10);  /* 10 bytes of garbage prefix */
-    serialize_packet(duties, combined + 10, sizeof(combined) - 10);
+void test_packet_after_garbage(void) {
+    uint8_t buffer[40];
+    memset(buffer, 0xFF, 15);  /* Garbage prefix */
+
+    uint16_t duties[NUM_PWM_VALS] = {500, 500, 500, 500, 500};
+    serialize_packet(duties, buffer + 15, TOTAL_PACKET_SIZE);
+
+    memset(buffer + 15 + TOTAL_PACKET_SIZE, 0xEE, 10);  /* Garbage suffix */
 
     PacketData parsed;
-    bool success = parse_byte_stream(combined, 10 + TOTAL_PACKET_SIZE, &parsed);
-    assert(success == true);
-    assert(parsed.valid == true);
-    for (size_t i = 0; i < NUM_PWM_VALS; i++) {
-        assert(parsed.duty_cycles[i] == duties[i]);
-    }
-
-    printf("[PASS] test_packet_after_garbage\n");
+    bool success = parse_byte_stream(buffer, sizeof(buffer), &parsed);
+    TEST_ASSERT_TRUE(success);
+    TEST_ASSERT_TRUE(parsed.valid);
+    TEST_ASSERT_EQUAL_UINT16(500, parsed.duty_cycles[0]);
 }
 
-void test_null_buffer_safety() {
+void test_null_buffer_safety(void) {
     PacketData parsed;
-    bool success = parse_byte_stream(NULL, 0, &parsed);
-    assert(success == false);
-
-    success = parse_byte_stream(NULL, 100, NULL);
-    assert(success == false);
-
-    printf("[PASS] test_null_buffer_safety\n");
+    TEST_ASSERT_FALSE(parse_byte_stream(NULL, 15, &parsed));
+    TEST_ASSERT_FALSE(parse_byte_stream(NULL, 0, NULL));
 }
 
-void test_truncated_buffer_rejected() {
-    uint16_t duties[NUM_PWM_VALS] = {100, 200, 300, 400, 500};
+void test_truncated_buffer_rejected(void) {
+    uint16_t duties[NUM_PWM_VALS] = {100, 100, 100, 100, 100};
     uint8_t buffer[TOTAL_PACKET_SIZE];
     serialize_packet(duties, buffer, sizeof(buffer));
 
-    /* Pass only 10 bytes of a 15-byte packet */
     PacketData parsed;
-    bool success = parse_byte_stream(buffer, 10, &parsed);
-    assert(success == false);
-
-    printf("[PASS] test_truncated_buffer_rejected\n");
+    /* Pass 14 bytes instead of 15 */
+    bool success = parse_byte_stream(buffer, TOTAL_PACKET_SIZE - 1, &parsed);
+    TEST_ASSERT_FALSE(success);
 }
 
-void test_ack_packet_builder() {
+void test_ack_packet_builder(void) {
     uint8_t ack_buf[ACK_PACKET_SIZE];
-
     size_t len = build_ack_packet(ACK_STATUS_OK, ack_buf, sizeof(ack_buf));
-    assert(len == ACK_PACKET_SIZE);
-    assert(ack_buf[0] == PACKET_HEADER_1);
-    assert(ack_buf[1] == ACK_STATUS_OK);
 
-    /* CRC of status byte */
+    TEST_ASSERT_EQUAL_INT(ACK_PACKET_SIZE, len);
+    TEST_ASSERT_EQUAL_HEX8(PACKET_HEADER_1, ack_buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(ACK_STATUS_OK, ack_buf[1]);
+
     uint8_t expected_crc = calculate_crc8(&ack_buf[1], 1);
-    assert(ack_buf[2] == expected_crc);
-
-    printf("[PASS] test_ack_packet_builder\n");
+    TEST_ASSERT_EQUAL_HEX8(expected_crc, ack_buf[2]);
 }
 
-void test_nak_packet_builder() {
-    uint8_t ack_buf[ACK_PACKET_SIZE];
+void test_nak_packet_builder(void) {
+    uint8_t nak_buf[ACK_PACKET_SIZE];
+    size_t len = build_ack_packet(ACK_STATUS_NAK, nak_buf, sizeof(nak_buf));
 
-    size_t len = build_ack_packet(ACK_STATUS_NAK, ack_buf, sizeof(ack_buf));
-    assert(len == ACK_PACKET_SIZE);
-    assert(ack_buf[1] == ACK_STATUS_NAK);
-
-    printf("[PASS] test_nak_packet_builder\n");
+    TEST_ASSERT_EQUAL_INT(ACK_PACKET_SIZE, len);
+    TEST_ASSERT_EQUAL_HEX8(ACK_STATUS_NAK, nak_buf[1]);
 }
 
-void test_ack_buffer_too_small() {
-    uint8_t tiny_buf[1];
+void test_ack_buffer_too_small(void) {
+    uint8_t tiny_buf[2];
     size_t len = build_ack_packet(ACK_STATUS_OK, tiny_buf, sizeof(tiny_buf));
-    assert(len == 0);
-
-    printf("[PASS] test_ack_buffer_too_small\n");
+    TEST_ASSERT_EQUAL_INT(0, len);
 }
 
-void test_serialize_clamps_duty() {
+void test_serialize_clamps_duty(void) {
     uint16_t duties[NUM_PWM_VALS] = {0, 0, 0, 0, 2000}; /* 2000 > 1023 */
     uint8_t buffer[TOTAL_PACKET_SIZE];
 
@@ -151,23 +135,20 @@ void test_serialize_clamps_duty() {
     /* Parse and verify clamping */
     PacketData parsed;
     parse_byte_stream(buffer, TOTAL_PACKET_SIZE, &parsed);
-    assert(parsed.duty_cycles[4] == 1023);
-
-    printf("[PASS] test_serialize_clamps_duty\n");
+    TEST_ASSERT_EQUAL_UINT16(1023, parsed.duty_cycles[4]);
 }
 
-int main() {
-    printf("--- Running Protocol Parser Unit Tests ---\n");
-    test_ideal_packet_parsing();
-    test_corrupted_crc_continues_scanning();
-    test_garbage_stream_rejected();
-    test_packet_after_garbage();
-    test_null_buffer_safety();
-    test_truncated_buffer_rejected();
-    test_ack_packet_builder();
-    test_nak_packet_builder();
-    test_ack_buffer_too_small();
-    test_serialize_clamps_duty();
-    printf("All Protocol Parser tests passed successfully.\n");
-    return 0;
+int main(void) {
+    UNITY_BEGIN();
+    RUN_TEST(test_ideal_packet_parsing);
+    RUN_TEST(test_corrupted_crc_continues_scanning);
+    RUN_TEST(test_garbage_stream_rejected);
+    RUN_TEST(test_packet_after_garbage);
+    RUN_TEST(test_null_buffer_safety);
+    RUN_TEST(test_truncated_buffer_rejected);
+    RUN_TEST(test_ack_packet_builder);
+    RUN_TEST(test_nak_packet_builder);
+    RUN_TEST(test_ack_buffer_too_small);
+    RUN_TEST(test_serialize_clamps_duty);
+    return UNITY_END();
 }

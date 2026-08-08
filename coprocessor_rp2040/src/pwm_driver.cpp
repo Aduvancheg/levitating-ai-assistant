@@ -107,9 +107,9 @@ uint16_t ramp_pwm_duty(uint8_t channel, uint16_t target, uint16_t step) {
     uint16_t current = channel_duties[channel];
 
     if (current < clamped_target) {
-        uint16_t next = current + step;
+        uint32_t next = (uint32_t)current + step;
         if (next > clamped_target) next = clamped_target;
-        set_pwm_duty(channel, next);
+        set_pwm_duty(channel, (uint16_t)next);
     } else if (current > clamped_target) {
         uint16_t diff = current - clamped_target;
         uint16_t next = (diff < step) ? clamped_target : (current - step);

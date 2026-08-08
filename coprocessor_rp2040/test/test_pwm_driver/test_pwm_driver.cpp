@@ -4,110 +4,98 @@
  */
 
 #include "../../src/pwm_driver.h"
-#include <assert.h>
-#include <stdio.h>
+#include <unity.h>
 
-void test_pwm_initialization() {
+void setUp(void) {
+    // Empty
+}
+
+void tearDown(void) {
+    // Empty
+}
+
+void test_pwm_initialization(void) {
     uint8_t pins[PWM_CHANNELS] = {0, 1, 2, 3, 4};
 
     /* Frequency below 20 kHz must be rejected */
     bool res_low = init_pwm_channels(pins, 10000);
-    assert(res_low == false);
+    TEST_ASSERT_FALSE(res_low);
 
     /* Frequency >= 20 kHz accepted */
     bool res_ok = init_pwm_channels(pins, 25000);
-    assert(res_ok == true);
-    assert(get_pwm_frequency() == 25000);
-
-    printf("[PASS] test_pwm_initialization\n");
+    TEST_ASSERT_TRUE(res_ok);
+    TEST_ASSERT_EQUAL_UINT32(25000, get_pwm_frequency());
 }
 
-void test_pwm_duty_boundary() {
+void test_pwm_duty_boundary(void) {
     uint8_t pins[PWM_CHANNELS] = {0, 1, 2, 3, 4};
     init_pwm_channels(pins, 25000);
 
     /* Valid duty = 0 */
-    assert(set_pwm_duty(0, 0) == true);
-    assert(get_pwm_duty(0) == 0);
+    TEST_ASSERT_TRUE(set_pwm_duty(0, 0));
+    TEST_ASSERT_EQUAL_UINT16(0, get_pwm_duty(0));
 
-    /* Valid duty = 512 (within MAX_DUTY_LIMIT) */
-    assert(set_pwm_duty(0, 300) == true);
-    assert(get_pwm_duty(0) == 300);
+    /* Valid duty = 300 (within MAX_DUTY_LIMIT) */
+    TEST_ASSERT_TRUE(set_pwm_duty(0, 300));
+    TEST_ASSERT_EQUAL_UINT16(300, get_pwm_duty(0));
 
     /* Duty at MAX_DUTY_LIMIT (460) should be accepted as-is */
-    assert(set_pwm_duty(0, MAX_DUTY_LIMIT) == true);
-    assert(get_pwm_duty(0) == MAX_DUTY_LIMIT);
+    TEST_ASSERT_TRUE(set_pwm_duty(0, MAX_DUTY_LIMIT));
+    TEST_ASSERT_EQUAL_UINT16(MAX_DUTY_LIMIT, get_pwm_duty(0));
 
-    /* Duty above MAX_DUTY_LIMIT: clamped, NOT rejected.
-     * PID overshoot should be handled gracefully. */
-    assert(set_pwm_duty(0, 800) == true);
-    assert(get_pwm_duty(0) == MAX_DUTY_LIMIT);  /* Clamped to 460 */
+    /* Duty above MAX_DUTY_LIMIT: clamped, NOT rejected. */
+    TEST_ASSERT_TRUE(set_pwm_duty(0, 800));
+    TEST_ASSERT_EQUAL_UINT16(MAX_DUTY_LIMIT, get_pwm_duty(0));
 
-    assert(set_pwm_duty(0, 1023) == true);
-    assert(get_pwm_duty(0) == MAX_DUTY_LIMIT);  /* Still clamped */
+    TEST_ASSERT_TRUE(set_pwm_duty(0, 1023));
+    TEST_ASSERT_EQUAL_UINT16(MAX_DUTY_LIMIT, get_pwm_duty(0));
 
     /* Out-of-bound channel (>= 5) should fail */
-    assert(set_pwm_duty(5, 100) == false);
-
-    printf("[PASS] test_pwm_duty_boundary\n");
+    TEST_ASSERT_FALSE(set_pwm_duty(5, 100));
 }
 
-void test_smooth_ramp_up() {
+void test_smooth_ramp_up(void) {
     uint8_t pins[PWM_CHANNELS] = {0, 1, 2, 3, 4};
     init_pwm_channels(pins, 25000);
 
-    /* Start at 0 */
     set_pwm_duty(0, 0);
-    assert(get_pwm_duty(0) == 0);
+    TEST_ASSERT_EQUAL_UINT16(0, get_pwm_duty(0));
 
-    /* Ramp toward target 100, step 10 */
     uint16_t d1 = ramp_pwm_duty(0, 100, 10);
-    assert(d1 == 10);   /* 0 + 10 = 10 */
+    TEST_ASSERT_EQUAL_UINT16(10, d1);
 
     uint16_t d2 = ramp_pwm_duty(0, 100, 10);
-    assert(d2 == 20);   /* 10 + 10 = 20 */
+    TEST_ASSERT_EQUAL_UINT16(20, d2);
 
-    /* Ramp with large step overshooting target */
     uint16_t d3 = ramp_pwm_duty(0, 25, 50);
-    assert(d3 == 25);   /* Clamped to target, not 70 */
-
-    printf("[PASS] test_smooth_ramp_up\n");
+    TEST_ASSERT_EQUAL_UINT16(25, d3);
 }
 
-void test_smooth_ramp_down() {
+void test_smooth_ramp_down(void) {
     uint8_t pins[PWM_CHANNELS] = {0, 1, 2, 3, 4};
     init_pwm_channels(pins, 25000);
 
-    /* Set to 200 */
     set_pwm_duty(1, 200);
-    assert(get_pwm_duty(1) == 200);
+    TEST_ASSERT_EQUAL_UINT16(200, get_pwm_duty(1));
 
-    /* Ramp down toward 100, step 30 */
     uint16_t d1 = ramp_pwm_duty(1, 100, 30);
-    assert(d1 == 170);  /* 200 - 30 = 170 */
+    TEST_ASSERT_EQUAL_UINT16(170, d1);
 
-    /* Ramp down past target clamps */
     uint16_t d2 = ramp_pwm_duty(1, 160, 50);
-    assert(d2 == 160);  /* 170 - 50 would be 120, but clamped to 160 */
-
-    printf("[PASS] test_smooth_ramp_down\n");
+    TEST_ASSERT_EQUAL_UINT16(160, d2);
 }
 
-void test_ramp_clamps_to_max_duty_limit() {
+void test_ramp_clamps_to_max_duty_limit(void) {
     uint8_t pins[PWM_CHANNELS] = {0, 1, 2, 3, 4};
     init_pwm_channels(pins, 25000);
 
-    /* Ramp toward 1000 (above MAX_DUTY_LIMIT) */
     for (int i = 0; i < 200; i++) {
         ramp_pwm_duty(2, 1000, 10);
     }
-    /* Should cap at MAX_DUTY_LIMIT, not 1000 */
-    assert(get_pwm_duty(2) == MAX_DUTY_LIMIT);
-
-    printf("[PASS] test_ramp_clamps_to_max_duty_limit\n");
+    TEST_ASSERT_EQUAL_UINT16(MAX_DUTY_LIMIT, get_pwm_duty(2));
 }
 
-void test_kill_all_pwm() {
+void test_kill_all_pwm(void) {
     uint8_t pins[PWM_CHANNELS] = {0, 1, 2, 3, 4};
     init_pwm_channels(pins, 25000);
 
@@ -118,27 +106,23 @@ void test_kill_all_pwm() {
     kill_all_pwm();
 
     for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
-        assert(get_pwm_duty(i) == 0);
+        TEST_ASSERT_EQUAL_UINT16(0, get_pwm_duty(i));
     }
-
-    printf("[PASS] test_kill_all_pwm\n");
 }
 
-void test_ramp_invalid_channel() {
+void test_ramp_invalid_channel(void) {
     uint16_t result = ramp_pwm_duty(10, 100, 10);
-    assert(result == 0);
-    printf("[PASS] test_ramp_invalid_channel\n");
+    TEST_ASSERT_EQUAL_UINT16(0, result);
 }
 
-int main() {
-    printf("--- Running PWM Driver Unit Tests ---\n");
-    test_pwm_initialization();
-    test_pwm_duty_boundary();
-    test_smooth_ramp_up();
-    test_smooth_ramp_down();
-    test_ramp_clamps_to_max_duty_limit();
-    test_kill_all_pwm();
-    test_ramp_invalid_channel();
-    printf("All PWM Driver tests passed successfully.\n");
-    return 0;
+int main(void) {
+    UNITY_BEGIN();
+    RUN_TEST(test_pwm_initialization);
+    RUN_TEST(test_pwm_duty_boundary);
+    RUN_TEST(test_smooth_ramp_up);
+    RUN_TEST(test_smooth_ramp_down);
+    RUN_TEST(test_ramp_clamps_to_max_duty_limit);
+    RUN_TEST(test_kill_all_pwm);
+    RUN_TEST(test_ramp_invalid_channel);
+    return UNITY_END();
 }
