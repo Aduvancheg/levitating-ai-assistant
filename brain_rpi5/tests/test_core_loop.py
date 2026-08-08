@@ -21,6 +21,7 @@ from brain_rpi5.src.core_loop import (
     UARTPacketBuilder,
     LevitationCoreLoop,
     calculate_crc8,
+    ThermalModel,
 )
 
 
@@ -289,3 +290,51 @@ class TestDryRunMode:
 
         # Serial.write should have been called at least once
         assert mock_serial.write.call_count >= 1
+
+
+# =================================================================
+# Physical Lock and Thermal Throttling
+# =================================================================
+
+class TestThermalModel:
+
+    def test_thermal_throttling_triggers_and_cools(self):
+        model = ThermalModel(heat_capacity=50.0, cooling_rate=10.0)
+        duties = [100, 100, 100, 100, 100]  # Avg 100
+        
+        # dt = 0.5, net heat = (100 - 10) * 0.5 = 45
+        assert not model.update(0.5, duties)
+        assert abs(model.current_heat - 45.0) < 1e-4
+        
+        # dt = 0.5, net heat = +45 -> 90 > 50 -> triggers
+        assert model.update(0.5, duties)
+        
+        # Cool down: duties = 0
+        zero_duties = [0, 0, 0, 0, 0]
+        # dt = 5.0, net heat = (0 - 10) * 5.0 = -50 -> 40 < 50 -> False
+        assert not model.update(5.0, zero_duties)
+
+class TestNegativeScenarios:
+
+    @pytest.mark.asyncio
+    async def test_physical_intervention_triggers_lock(self):
+        from unittest.mock import MagicMock
+        mock_serial = MagicMock()
+        loop = LevitationCoreLoop(serial_port=mock_serial, dry_run=False)
+        
+        # Iteration 1: Normal Z=30
+        # Iteration 2: Sudden Z=900
+        sensor_data_sequence = [
+            {"hall_z_mm": 30.0, "tof_xyz": (0.0, 0.0, 30.0)},
+            {"hall_z_mm": 900.0, "tof_xyz": (0.0, 0.0, 900.0)},
+        ]
+        
+        async def fake_sensors():
+            if sensor_data_sequence:
+                return sensor_data_sequence.pop(0)
+            return {"hall_z_mm": 900.0, "tof_xyz": (0.0, 0.0, 900.0)}
+            
+        await loop.run(read_sensors_callback=fake_sensors, max_iterations=2)
+        
+        assert loop.state_physical_lock is True
+        assert loop._last_duties == [0, 0, 0, 0, 0]

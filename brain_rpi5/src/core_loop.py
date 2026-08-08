@@ -269,6 +269,40 @@ class CoilMapper:
 
 
 # =====================================================================
+# Thermal Model — Coil heat estimation and throttling
+# =====================================================================
+
+class ThermalModel:
+    """
+    Estimates coil heating by integrating PWM duty cycles over time.
+    Triggers THERMAL_THROTTLING if the accumulated heat exceeds capacity.
+    """
+    def __init__(self, heat_capacity: float = 50000.0, cooling_rate: float = 100.0) -> None:
+        self.heat_capacity = heat_capacity
+        self.cooling_rate = cooling_rate
+        self.current_heat: float = 0.0
+
+    def update(self, dt: float, duties: List[int]) -> bool:
+        """
+        Update the thermal model with the latest duty cycles.
+        Returns True if throttling should be active.
+        """
+        if not duties:
+            return False
+        
+        # Approximate heating by the average duty cycle
+        avg_duty = sum(duties) / len(duties)
+        
+        # Net heat change
+        self.current_heat += (avg_duty - self.cooling_rate) * dt
+        
+        if self.current_heat < 0.0:
+            self.current_heat = 0.0
+            
+        return self.current_heat > self.heat_capacity
+
+
+# =====================================================================
 # UART Packet Builder — binary frame with CRC-8
 # =====================================================================
 
@@ -362,10 +396,19 @@ class LevitationCoreLoop:
         self.pid = TriAxisPID(kp=2.0, ki=0.1, kd=0.5, integral_limit=500.0)
         self.mapper = CoilMapper(max_duty=460)
         self.packer = UARTPacketBuilder()
+        self.thermal_model = ThermalModel(heat_capacity=50000.0, cooling_rate=100.0)
 
         self._running: bool = False
         self._iteration_count: int = 0
         self._last_duties: List[int] = [0, 0, 0, 0, 0]
+        
+        self.state_physical_lock: bool = False
+        self.state_thermal_throttling: bool = False
+        self._prev_z: Optional[float] = None
+
+        # Max allowed Z velocity (mm/s). Free fall is ~9.8 m/s^2.
+        # A sudden jump of > 2000 mm/s is physically impossible (sensor blocked / intercepted).
+        self.MAX_DZ_DT: float = 2000.0
 
     async def run(
         self,
@@ -408,19 +451,46 @@ class LevitationCoreLoop:
 
                 measurement = (tof_x, tof_y, fused_z)
 
-                # 3. PID compute
+                # 3. Time Delta
                 dt = time.monotonic() - loop_start
                 if dt <= 0:
                     dt = self.TARGET_DT_S
+
+                # 4. Anomaly Detection (Physical Lock)
+                if self._prev_z is not None:
+                    dz_dt = abs(fused_z - self._prev_z) / dt
+                    if dz_dt > self.MAX_DZ_DT:
+                        logger.warning("PHYSICAL_LOCK triggered! dz/dt=%.2f exceeds %.2f", dz_dt, self.MAX_DZ_DT)
+                        self.state_physical_lock = True
+                self._prev_z = fused_z
+
+                if self.state_physical_lock:
+                    self._safe_shutdown()
+                    
+                    self._iteration_count += 1
+                    if max_iterations is not None and self._iteration_count >= max_iterations:
+                        break
+                        
+                    await asyncio.sleep(self.TARGET_DT_S)
+                    continue
+
+                # 5. Thermal Throttling
+                self.state_thermal_throttling = self.thermal_model.update(dt, self._last_duties)
+                active_setpoint = list(self.setpoint)
+                if self.state_thermal_throttling:
+                    # Gradually lower Target Z to cool down
+                    active_setpoint[2] = max(5.0, active_setpoint[2] - 0.5)
+
+                # 6. PID compute
                 pid_x, pid_y, pid_z = self.pid.compute(
-                    self.setpoint, measurement, dt
+                    tuple(active_setpoint), measurement, dt
                 )
 
-                # 4. Map to 5 coil duties
+                # 7. Map to 5 coil duties
                 duties = self.mapper.map(pid_x, pid_y, pid_z)
                 self._last_duties = duties
 
-                # 5. Send UART packet (or suppress in dry-run)
+                # 8. Send UART packet (or suppress in dry-run)
                 self._send_packet(duties)
 
                 self._iteration_count += 1
@@ -428,7 +498,7 @@ class LevitationCoreLoop:
                 if max_iterations is not None and self._iteration_count >= max_iterations:
                     break
 
-                # 6. Pace to target rate
+                # 9. Pace to target rate
                 elapsed = time.monotonic() - loop_start
                 sleep_time = self.TARGET_DT_S - elapsed
                 if sleep_time > 0:

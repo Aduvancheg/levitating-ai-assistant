@@ -19,6 +19,11 @@
  *   3. Anomaly detection: rejects packets whose duty delta from the
  *      previous accepted packet exceeds ANOMALY_DELTA_THRESHOLD on
  *      any channel (solar glare / sensor fault protection).
+ *   4. Ramp bypass: in ACTIVE state, duty is applied instantly to
+ *      avoid PID throttling; ramp is used only in SAFE_LANDING/OTA.
+ *   5. Recovery hysteresis: SAFE_LANDING → ACTIVE requires
+ *      FSM_RECOVERY_THRESHOLD consecutive valid packets to prevent
+ *      yo-yo oscillation on unstable UART links.
  *
  * All time is injected as uint64_t now_us for deterministic testing.
  *
@@ -64,6 +69,18 @@ typedef enum {
  * превышает физические пределы свободного падения".
  */
 #define ANOMALY_DELTA_THRESHOLD    400
+
+/**
+ * Recovery hysteresis: number of consecutive valid packets required
+ * to transition from SAFE_LANDING back to ACTIVE.
+ *
+ * Prevents yo-yo oscillation when the UART link is unstable (e.g.,
+ * loose connector or RPi 5 under load).  A single good packet is
+ * not enough to prove the link is stable.
+ *
+ * At ~800 Hz packet rate, 5 packets = ~6 ms of proven stability.
+ */
+#define FSM_RECOVERY_THRESHOLD     5
 
 #ifdef __cplusplus
 extern "C" {
@@ -125,6 +142,18 @@ void fsm_command_ota_success(uint64_t now_us);
  * @return Pointer to internal array of NUM_PWM_VALS elements.
  */
 const uint16_t* fsm_get_target_duties(void);
+
+/**
+ * @brief Should the main loop apply duty via smooth ramp?
+ *
+ * Returns true in SAFE_LANDING and OTA_LOCKED (duty must change
+ * gradually to avoid mechanical shock).  Returns false in ACTIVE
+ * (PID commands must be applied instantly — ramp would throttle
+ * the D-coefficient and cause the sphere to fall).
+ *
+ * @return true → use ramp_pwm_duty(),  false → use set_pwm_duty().
+ */
+bool fsm_should_ramp(void);
 
 #ifdef __cplusplus
 }

@@ -3,7 +3,8 @@
  * @brief Coprocessor Finite State Machine — state coordination layer.
  *
  * Sits between protocol_parser (input) and pwm_driver (output).
- * Manages heartbeat watchdog, OTA locking, and anomaly filtering.
+ * Manages heartbeat watchdog, OTA locking, anomaly filtering,
+ * ramp bypass policy, and recovery hysteresis.
  *
  * All time is injected externally (uint64_t now_us) so the module
  * is fully testable in [env:native] without hardware timers.
@@ -21,6 +22,7 @@ static uint64_t  last_packet_us = 0;
 static uint16_t  target_duties[NUM_PWM_VALS]  = {0, 0, 0, 0, 0};
 static uint16_t  prev_duties[NUM_PWM_VALS]    = {0, 0, 0, 0, 0};
 static bool      has_prev_packet = false;  /* First packet has no delta to check */
+static uint8_t   recovery_count = 0;       /* Hysteresis counter for SAFE_LANDING → ACTIVE */
 
 /* ---- Helper: absolute difference for uint16_t --------------------- */
 
@@ -60,6 +62,7 @@ void fsm_init(uint64_t now_us) {
     current_state = FSM_STATE_ACTIVE;
     last_packet_us = now_us;
     has_prev_packet = false;
+    recovery_count = 0;
     memset(target_duties, 0, sizeof(target_duties));
     memset(prev_duties, 0, sizeof(prev_duties));
 }
@@ -91,9 +94,15 @@ bool fsm_feed_packet(const PacketData *packet, uint64_t now_us) {
     has_prev_packet = true;
     last_packet_us = now_us;
 
-    /* If we were in SAFE_LANDING, a valid packet recovers us */
+    /* Recovery hysteresis: SAFE_LANDING → ACTIVE requires
+     * FSM_RECOVERY_THRESHOLD consecutive valid packets to prove
+     * the link is truly stable (prevents yo-yo oscillation). */
     if (current_state == FSM_STATE_SAFE_LANDING) {
-        current_state = FSM_STATE_ACTIVE;
+        recovery_count++;
+        if (recovery_count >= FSM_RECOVERY_THRESHOLD) {
+            current_state = FSM_STATE_ACTIVE;
+            recovery_count = 0;
+        }
     }
 
     return true;
@@ -106,6 +115,7 @@ void fsm_tick(uint64_t now_us) {
     if (current_state == FSM_STATE_ACTIVE) {
         if (now_us - last_packet_us > FSM_HEARTBEAT_TIMEOUT_US) {
             current_state = FSM_STATE_SAFE_LANDING;
+            recovery_count = 0;  /* Reset hysteresis on entering SAFE_LANDING */
             /* Set all targets to 0 for smooth ramp-down */
             memset(target_duties, 0, sizeof(target_duties));
         }
@@ -135,4 +145,11 @@ void fsm_command_ota_success(uint64_t now_us) {
 
 const uint16_t* fsm_get_target_duties(void) {
     return target_duties;
+}
+
+bool fsm_should_ramp(void) {
+    /* In ACTIVE state, PID commands must be applied instantly.
+     * In SAFE_LANDING and OTA_LOCKED, duty changes must be gradual
+     * to avoid mechanical shock (ramp up/down smoothly). */
+    return current_state != FSM_STATE_ACTIVE;
 }
