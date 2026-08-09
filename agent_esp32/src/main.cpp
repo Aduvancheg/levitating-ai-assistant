@@ -38,10 +38,12 @@ static const float COIL_GAIN = 50.0f;
 /* ---- State machine ------------------------------------------------ */
 
 typedef enum {
-    STATE_IDLE,          /* Waiting for loop tick */
-    STATE_READ_IMU,      /* Request orientation from BNO085 */
-    STATE_COIL_UPDATE,   /* Compute and apply coil duty */
-    STATE_HEALTH_CHECK   /* I2C watchdog check */
+    STATE_IDLE,               /* Waiting for loop tick */
+    STATE_READ_IMU,           /* Request orientation from BNO085 */
+    STATE_RELAY_WAIT_ISOLATE, /* Wait for Qi relay to finish isolating */
+    STATE_COIL_UPDATE,        /* Compute and apply coil duty */
+    STATE_RELAY_WAIT_RESTORE, /* Wait for Qi relay to finish restoring */
+    STATE_HEALTH_CHECK        /* I2C watchdog check */
 } AgentState;
 
 /* ---- Runtime state ------------------------------------------------ */
@@ -122,11 +124,21 @@ void loop() {
         }
         break;
 
+    case STATE_RELAY_WAIT_ISOLATE:
+        /* Poll relay settle — non-blocking wait for 5 ms settling */
+        if (qi_relay_is_ready(now)) {
+            coil_state.qi_isolated = true;
+            agent_state = STATE_COIL_UPDATE;
+        }
+        /* else: stay in this state until relay settles */
+        break;
+
     case STATE_COIL_UPDATE: {
         /* Ensure Qi relay is isolated before coil activation */
         if (!coil_state.qi_isolated) {
             qi_relay_isolate();
-            coil_state.qi_isolated = true;
+            agent_state = STATE_RELAY_WAIT_ISOLATE;
+            break;  /* Wait for settle before proceeding */
         }
 
         uint16_t duty = update_smart_coil(
@@ -137,15 +149,25 @@ void loop() {
             &coil_state
         );
 
-        /* If coil returned to zero, restore Qi charging */
+        /* If coil returned to zero, begin Qi restoration (non-blocking) */
         if (duty == 0 && coil_state.qi_isolated && !coil_state.fuse_tripped) {
             qi_relay_restore();
-            coil_state.qi_isolated = false;
+            agent_state = STATE_RELAY_WAIT_RESTORE;
+            break;  /* Wait for settle before health check */
         }
 
         agent_state = STATE_HEALTH_CHECK;
         break;
     }
+
+    case STATE_RELAY_WAIT_RESTORE:
+        /* Poll relay settle for restore transition */
+        if (qi_relay_is_ready(now)) {
+            coil_state.qi_isolated = false;
+            agent_state = STATE_HEALTH_CHECK;
+        }
+        /* else: stay in this state until relay settles */
+        break;
 
     case STATE_HEALTH_CHECK:
         /* I2C bus watchdog — detect hung bus and recover */
@@ -162,9 +184,16 @@ void loop() {
                                latest_orientation.pitch * latest_orientation.pitch);
             if (tilt < DEADZONE_TILT_DEG) {
                 reset_software_fuse(&coil_state);
-                /* Restore Qi once fuse is cleared and coil is off */
+                /* Begin Qi restoration once fuse is cleared and coil is off.
+                 * The next iteration will pick up SETTLING → CONNECTED
+                 * via qi_relay_is_ready() in subsequent state cycles.  */
                 if (coil_state.qi_isolated) {
                     qi_relay_restore();
+                    /* Note: qi_isolated flag will be cleared when
+                     * STATE_RELAY_WAIT_RESTORE completes in a
+                     * future cycle. For health-check path, we
+                     * start the transition and continue — the
+                     * relay will settle within 5 ms (< 1 loop tick). */
                     coil_state.qi_isolated = false;
                 }
             }

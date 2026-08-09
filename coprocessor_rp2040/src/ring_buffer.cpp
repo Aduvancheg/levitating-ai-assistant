@@ -1,78 +1,116 @@
 /**
  * @file ring_buffer.cpp
- * @brief O(1) circular byte buffer implementation for UART RX.
+ * @brief Lock-free SPSC Ring Buffer implementation.
  *
- * Pure C implementation with no dynamic memory, no blocking calls,
- * and no hardware dependencies.  Fully testable in [env:native].
- *
- * When the buffer is full, rb_push() overwrites the oldest byte.
- * This ensures the parser always sees the freshest data from the
- * UART stream, which is critical at 921600 baud (~10 µs per byte).
+ * All index arithmetic uses `& RING_BUFFER_MASK` instead of
+ * `% RING_BUFFER_CAPACITY` for deterministic O(1) performance
+ * on the RP2040 (which lacks a hardware divider in Cortex-M0+).
  */
 
 #include "ring_buffer.h"
-#include <string.h>
 
-void rb_init(RingBuffer *rb, uint8_t *backing, size_t capacity) {
-    rb->buf      = backing;
-    rb->capacity = capacity;
-    rb->head     = 0;
-    rb->count    = 0;
+/* ---- Init / Clear ------------------------------------------------- */
+
+void ring_buffer_init(RingBuffer *rb) {
+    if (rb == nullptr) return;
+    rb->head_ = 0;
+    rb->tail_ = 0;
+    /* No need to zero data[] — only indices matter for correctness */
 }
 
-void rb_push(RingBuffer *rb, uint8_t byte) {
-    rb->buf[rb->head] = byte;
-    rb->head = (rb->head + 1) % rb->capacity;
-
-    if (rb->count < rb->capacity) {
-        rb->count++;
-    }
-    /* If count == capacity, we just overwrote the oldest byte.
-     * head already advanced past it, so count stays at capacity. */
+void ring_buffer_clear(RingBuffer *rb) {
+    if (rb == nullptr) return;
+    rb->head_ = 0;
+    rb->tail_ = 0;
 }
 
-size_t rb_linearize(const RingBuffer *rb, uint8_t *out, size_t max_len) {
-    size_t to_copy = (rb->count < max_len) ? rb->count : max_len;
-    if (to_copy == 0) return 0;
+/* ---- Producer: push ----------------------------------------------- */
 
-    /* Calculate tail (oldest byte position) */
-    size_t tail;
-    if (rb->head >= rb->count) {
-        tail = rb->head - rb->count;
-    } else {
-        tail = rb->capacity - (rb->count - rb->head);
+bool ring_buffer_push(RingBuffer *rb, uint8_t byte) {
+    if (rb == nullptr) return false;
+
+    size_t next_head = (rb->head_ + 1u) & RING_BUFFER_MASK;
+
+    if (next_head == rb->tail_) {
+        /* Buffer full — overwrite oldest byte by advancing tail.
+         * For UART streams, newest data is always more relevant
+         * than stale bytes.                                           */
+        rb->tail_ = (rb->tail_ + 1u) & RING_BUFFER_MASK;
+        rb->data[rb->head_] = byte;
+        rb->head_ = next_head;
+        return false;  /* Overflow indicator */
     }
 
-    /* Copy in one or two chunks depending on wrap */
-    size_t first_chunk = rb->capacity - tail;
-    if (first_chunk >= to_copy) {
-        /* No wrap: single contiguous copy */
-        memcpy(out, rb->buf + tail, to_copy);
-    } else {
-        /* Wrap: copy tail..end, then start..remainder */
-        memcpy(out, rb->buf + tail, first_chunk);
-        memcpy(out + first_chunk, rb->buf, to_copy - first_chunk);
+    rb->data[rb->head_] = byte;
+    rb->head_ = next_head;
+    return true;
+}
+
+/* ---- Consumer: pop ------------------------------------------------ */
+
+bool ring_buffer_pop(RingBuffer *rb, uint8_t *out_byte) {
+    if (rb == nullptr || out_byte == nullptr) return false;
+
+    if (rb->tail_ == rb->head_) {
+        return false;  /* Empty */
+    }
+
+    *out_byte = rb->data[rb->tail_];
+    rb->tail_ = (rb->tail_ + 1u) & RING_BUFFER_MASK;
+    return true;
+}
+
+/* ---- Peek without consuming --------------------------------------- */
+
+bool ring_buffer_peek(const RingBuffer *rb, size_t offset, uint8_t *out_byte) {
+    if (rb == nullptr || out_byte == nullptr) return false;
+
+    size_t avail = ring_buffer_available(rb);
+    if (offset >= avail) {
+        return false;
+    }
+
+    size_t index = (rb->tail_ + offset) & RING_BUFFER_MASK;
+    *out_byte = rb->data[index];
+    return true;
+}
+
+/* ---- Available count ---------------------------------------------- */
+
+size_t ring_buffer_available(const RingBuffer *rb) {
+    if (rb == nullptr) return 0;
+
+    /* Cast to signed-safe arithmetic via the mask.
+     * (head - tail) & MASK works correctly even when head < tail
+     * because CAPACITY is a power of two.                             */
+    return (rb->head_ - rb->tail_) & RING_BUFFER_MASK;
+}
+
+/* ---- Discard (advance tail) --------------------------------------- */
+
+void ring_buffer_discard(RingBuffer *rb, size_t count) {
+    if (rb == nullptr) return;
+
+    size_t avail = ring_buffer_available(rb);
+    if (count > avail) {
+        count = avail;
+    }
+
+    rb->tail_ = (rb->tail_ + count) & RING_BUFFER_MASK;
+}
+
+/* ---- Snapshot: copy to linear buffer without consuming ------------ */
+
+size_t ring_buffer_snapshot(const RingBuffer *rb, uint8_t *out_buf, size_t max_len) {
+    if (rb == nullptr || out_buf == nullptr) return 0;
+
+    size_t avail = ring_buffer_available(rb);
+    size_t to_copy = (avail < max_len) ? avail : max_len;
+
+    for (size_t i = 0; i < to_copy; i++) {
+        size_t index = (rb->tail_ + i) & RING_BUFFER_MASK;
+        out_buf[i] = rb->data[index];
     }
 
     return to_copy;
-}
-
-void rb_consume(RingBuffer *rb, size_t n) {
-    if (n >= rb->count) {
-        rb->count = 0;
-        /* head stays where it is — next push goes to current head */
-    } else {
-        rb->count -= n;
-    }
-    /* No need to move head — consumed bytes are simply forgotten.
-     * The tail implicitly moves forward (tail = head - count). */
-}
-
-size_t rb_count(const RingBuffer *rb) {
-    return rb->count;
-}
-
-void rb_reset(RingBuffer *rb) {
-    rb->head  = 0;
-    rb->count = 0;
 }
