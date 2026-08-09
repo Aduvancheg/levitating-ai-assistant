@@ -17,6 +17,7 @@
 #include <Arduino.h>
 #include "pwm_driver.h"
 #include "protocol_parser.h"
+#include "ring_buffer.h"
 
 /* ---- Configuration ------------------------------------------------ */
 
@@ -40,8 +41,11 @@ static const uint32_t RAMP_TICK_INTERVAL_US = 1000;  /* 1 ms */
 
 /* ---- Runtime state ------------------------------------------------ */
 
-static uint8_t rx_buffer[TOTAL_PACKET_SIZE * 3];
-static size_t  rx_index = 0;
+static RingBuffer rx_ring;
+
+/** Linear snapshot buffer for parse_byte_stream() — avoids wrapping
+ *  complexity during parsing.  Sized to hold enough bytes for scan.   */
+static uint8_t snapshot_buf[TOTAL_PACKET_SIZE * 3];
 
 /** Target duties received from RPi 5 (ramped toward gradually).       */
 static uint16_t target_duties[PWM_CHANNELS] = {0, 0, 0, 0, 0};
@@ -97,6 +101,7 @@ void setup() {
         while (true) { /* halt */ }
     }
 
+    ring_buffer_init(&rx_ring);
     last_valid_packet_ms = millis();
     last_ramp_tick_us    = micros();
 
@@ -111,35 +116,34 @@ void loop() {
     /* ---- 1. Feed hardware watchdog -------------------------------- */
     wdt_feed();
 
-    /* ---- 2. Receive UART bytes ------------------------------------ */
+    /* ---- 2. Receive UART bytes into RingBuffer --------------------- */
     while (Serial1.available() > 0) {
         uint8_t byte_in = (uint8_t)Serial1.read();
+        ring_buffer_push(&rx_ring, byte_in);
+    }
 
-        if (rx_index < sizeof(rx_buffer)) {
-            rx_buffer[rx_index++] = byte_in;
-        } else {
-            /* Ring-shift on overflow to keep the newest bytes */
-            memmove(rx_buffer, rx_buffer + 1, sizeof(rx_buffer) - 1);
-            rx_buffer[sizeof(rx_buffer) - 1] = byte_in;
-        }
+    /* ---- 2b. Attempt parse when enough bytes are buffered ---------- */
+    if (ring_buffer_available(&rx_ring) >= TOTAL_PACKET_SIZE) {
+        size_t snap_len = ring_buffer_snapshot(
+            &rx_ring, snapshot_buf, sizeof(snapshot_buf));
 
-        /* Attempt parse once we have enough bytes */
-        if (rx_index >= TOTAL_PACKET_SIZE) {
-            PacketData packet;
-            if (parse_byte_stream(rx_buffer, rx_index, &packet)) {
-                /* Valid packet — update targets and send ACK */
-                for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
-                    target_duties[i] = packet.duty_cycles[i];
-                }
-
-                uint8_t ack_buf[ACK_PACKET_SIZE];
-                build_ack_packet(ACK_STATUS_OK, ack_buf, sizeof(ack_buf));
-                Serial1.write(ack_buf, ACK_PACKET_SIZE);
-
-                last_valid_packet_ms = now_ms;
-                comm_lost = false;
-                rx_index = 0;  /* Reset buffer after successful parse */
+        PacketData packet;
+        if (parse_byte_stream(snapshot_buf, snap_len, &packet)) {
+            /* Valid packet — update targets and send ACK */
+            for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
+                target_duties[i] = packet.duty_cycles[i];
             }
+
+            uint8_t ack_buf[ACK_PACKET_SIZE];
+            build_ack_packet(ACK_STATUS_OK, ack_buf, sizeof(ack_buf));
+            Serial1.write(ack_buf, ACK_PACKET_SIZE);
+
+            last_valid_packet_ms = now_ms;
+            comm_lost = false;
+
+            /* Discard the parsed packet from the ring buffer.
+             * We consumed TOTAL_PACKET_SIZE bytes worth of frame.     */
+            ring_buffer_discard(&rx_ring, TOTAL_PACKET_SIZE);
         }
     }
 
