@@ -1,3 +1,24 @@
+/**
+ * @file ring_buffer.h
+ * @brief Lock-free SPSC Ring Buffer for RP2040 UART reception.
+ *
+ * Design decisions:
+ *   - CAPACITY is a power of two (256) so that modulo can be replaced
+ *     with a bit-mask `& (CAPACITY - 1)` for O(1) index wrapping.
+ *   - `head_` and `tail_` are marked `volatile` to prevent the compiler
+ *     from caching their values in registers across ISR / main-loop
+ *     boundaries when optimising at -O2 / -O3.
+ *   - For future Dual-Core RP2040 operation (Core 0 produces, Core 1
+ *     consumes), upgrade `volatile` to `std::atomic<size_t>` with
+ *     `memory_order_acquire / release` semantics.
+ *
+ * Thread-safety model (current, bare-metal single-core + ISR):
+ *   - Producer (ISR / UART read) calls push() only.
+ *   - Consumer (main loop parser) calls pop() / peek() / available().
+ *   - One slot is always wasted to distinguish full from empty
+ *     (classic SPSC pattern).
+ */
+
 #ifndef RING_BUFFER_H
 #define RING_BUFFER_H
 
@@ -5,92 +26,96 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-/* ===================================================================
- * Ring Buffer — O(1) Circular Byte Buffer for UART RX
- *
- * Replaces the linear memmove-based buffer in the UART handler.
- * At 921600 baud (~10 µs per byte), memmove of the entire buffer
- * on every byte wastes CPU cycles.  This ring buffer provides:
- *
- *   - O(1) push: overwrites oldest byte when full (no data loss
- *     for streaming protocols — old bytes are already stale).
- *   - O(N) linearize: copies ring contents into a flat buffer
- *     for parse_byte_stream().  Called only when enough bytes
- *     have accumulated for a potential packet (≥ TOTAL_PACKET_SIZE).
- *   - O(1) consume: advances the tail pointer after a successful
- *     parse, discarding processed bytes.
- *
- * No dynamic memory.  No blocking calls.  ISR-safe for single
- * producer (UART RX ISR) / single consumer (main loop parser).
- *
- * References:
- *   - architecture.md §6 (high-speed UART protocol)
- * =================================================================== */
+/* ---- Capacity must be a power of two ------------------------------ */
+#define RING_BUFFER_CAPACITY 256u
 
-typedef struct {
-    uint8_t *buf;       /**< Backing storage (caller-provided, static) */
-    size_t   capacity;  /**< Total buffer capacity in bytes             */
-    size_t   head;      /**< Next write position (wraps around)         */
-    size_t   count;     /**< Current number of valid bytes in buffer    */
-} RingBuffer;
+/* Compile-time check: CAPACITY must be power-of-two */
+#if (RING_BUFFER_CAPACITY & (RING_BUFFER_CAPACITY - 1)) != 0
+  #error "RING_BUFFER_CAPACITY must be a power of two for bit-mask optimisation"
+#endif
+
+#define RING_BUFFER_MASK (RING_BUFFER_CAPACITY - 1u)
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * @brief Initialise ring buffer with caller-provided backing storage.
+ * @brief Opaque ring buffer handle.
  *
- * @param rb        Ring buffer instance.
- * @param backing   Static byte array for storage.
- * @param capacity  Size of the backing array in bytes.
+ * `head_` points to the next write position (producer).
+ * `tail_` points to the next read position (consumer).
+ * Buffer is empty when head_ == tail_.
+ * Buffer is full  when ((head_ + 1) & MASK) == tail_.
  */
-void rb_init(RingBuffer *rb, uint8_t *backing, size_t capacity);
+typedef struct {
+    uint8_t  data[RING_BUFFER_CAPACITY];
+    volatile size_t head_;   /**< Write index — modified by producer only */
+    volatile size_t tail_;   /**< Read  index — modified by consumer only */
+} RingBuffer;
 
 /**
- * @brief Push one byte into the ring buffer.
- *
- * If the buffer is full, the oldest byte is silently overwritten.
- * This is the correct behavior for streaming UART protocols where
- * stale bytes are worthless — we always want the freshest data.
- *
- * @param rb    Ring buffer instance.
- * @param byte  The byte to push.
+ * @brief Initialise / reset ring buffer to empty state.
  */
-void rb_push(RingBuffer *rb, uint8_t byte);
+void ring_buffer_init(RingBuffer *rb);
 
 /**
- * @brief Copy ring buffer contents into a flat (linear) buffer.
+ * @brief Push one byte into the buffer (producer side).
  *
- * Necessary because parse_byte_stream() expects a contiguous array.
- * Only call this when rb_count() >= TOTAL_PACKET_SIZE.
+ * If the buffer is full, the oldest byte is silently overwritten
+ * (tail is advanced) to ensure the newest data is always available.
+ * This is critical for UART streams where losing old bytes is
+ * preferable to losing new ones.
  *
- * @param rb       Ring buffer instance.
- * @param out      Destination flat buffer.
- * @param max_len  Size of the destination buffer.
- * @return Number of bytes copied (min of count and max_len).
+ * @return true if pushed without overflow, false if overflow occurred
+ *         (oldest byte was dropped).
  */
-size_t rb_linearize(const RingBuffer *rb, uint8_t *out, size_t max_len);
+bool ring_buffer_push(RingBuffer *rb, uint8_t byte);
 
 /**
- * @brief Consume (discard) the oldest N bytes from the buffer.
+ * @brief Pop one byte from the buffer (consumer side).
  *
- * Called after parse_byte_stream() reports how many bytes it consumed.
- *
- * @param rb  Ring buffer instance.
- * @param n   Number of bytes to consume. Clamped to count.
+ * @param rb         Ring buffer instance.
+ * @param out_byte   Destination for the popped byte.
+ * @return true if a byte was available and popped, false if empty.
  */
-void rb_consume(RingBuffer *rb, size_t n);
+bool ring_buffer_pop(RingBuffer *rb, uint8_t *out_byte);
 
 /**
- * @brief Return the current number of valid bytes in the buffer.
+ * @brief Peek at a byte at a given offset from tail without consuming it.
+ *
+ * Offset 0 = oldest available byte (tail).
+ *
+ * @return true if offset is within available data, false otherwise.
  */
-size_t rb_count(const RingBuffer *rb);
+bool ring_buffer_peek(const RingBuffer *rb, size_t offset, uint8_t *out_byte);
 
 /**
- * @brief Reset the ring buffer to empty state.
+ * @brief Number of bytes currently available for reading.
  */
-void rb_reset(RingBuffer *rb);
+size_t ring_buffer_available(const RingBuffer *rb);
+
+/**
+ * @brief Discard `count` bytes from the read side (advance tail).
+ *
+ * If count > available(), all bytes are discarded.
+ */
+void ring_buffer_discard(RingBuffer *rb, size_t count);
+
+/**
+ * @brief Reset the buffer to empty.
+ */
+void ring_buffer_clear(RingBuffer *rb);
+
+/**
+ * @brief Copy up to `max_len` bytes from the buffer into a linear
+ *        snapshot array WITHOUT consuming them.
+ *
+ * Useful for passing a contiguous byte array to `parse_byte_stream()`.
+ *
+ * @return Number of bytes actually copied.
+ */
+size_t ring_buffer_snapshot(const RingBuffer *rb, uint8_t *out_buf, size_t max_len);
 
 #ifdef __cplusplus
 }

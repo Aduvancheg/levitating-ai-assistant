@@ -35,7 +35,6 @@ static const uint8_t PWM_PINS[PWM_CHANNELS] = {0, 1, 2, 3, 6};  /* Hardware PWM 
 static const uint32_t PWM_FREQ_HZ = 25000;
 static const uint64_t RAMP_TICK_INTERVAL_US = 1000;  /* 1 ms */
 
-static uint8_t rx_backing_buffer[TOTAL_PACKET_SIZE * 3];
 static RingBuffer uart_rb;
 
 static uint64_t last_ramp_tick_us = 0;
@@ -66,7 +65,7 @@ int main(void) {
     uint64_t now_us = time_us_64();
     fsm_init(now_us);
     last_ramp_tick_us = now_us;
-    rb_init(&uart_rb, rx_backing_buffer, sizeof(rx_backing_buffer));
+    ring_buffer_init(&uart_rb);
 
     /* Main zero-jitter bare-metal execution loop */
     while (true) {
@@ -78,12 +77,12 @@ int main(void) {
         /* 2. Non-blocking UART RX processing */
         while (uart_is_readable(UART_ID)) {
             uint8_t byte_in = uart_getc(UART_ID);
-            rb_push(&uart_rb, byte_in);
+            ring_buffer_push(&uart_rb, byte_in);
 
             /* Attempt stream parse when frame size threshold met */
-            if (rb_count(&uart_rb) >= TOTAL_PACKET_SIZE) {
+            if (ring_buffer_available(&uart_rb) >= TOTAL_PACKET_SIZE) {
                 uint8_t linear_buf[TOTAL_PACKET_SIZE * 3];
-                size_t lin_len = rb_linearize(&uart_rb, linear_buf, sizeof(linear_buf));
+                size_t lin_len = ring_buffer_snapshot(&uart_rb, linear_buf, sizeof(linear_buf));
 
                 PacketData packet;
                 size_t consumed = 0;
@@ -101,7 +100,7 @@ int main(void) {
                     uart_write_blocking(UART_ID, ack_buf, ACK_PACKET_SIZE);
 
                     if (consumed > 0) {
-                        rb_consume(&uart_rb, consumed);
+                        ring_buffer_discard(&uart_rb, consumed);
                     }
                 }
             }

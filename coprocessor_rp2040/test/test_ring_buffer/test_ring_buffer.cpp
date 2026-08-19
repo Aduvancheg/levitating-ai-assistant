@@ -1,11 +1,11 @@
 /**
  * @file test_ring_buffer.cpp
- * @brief Unit tests for O(1) circular byte buffer.
+ * @brief Unit tests for lock-free SPSC Ring Buffer — push, pop, overflow,
+ *        snapshot, peek, discard, and bitmask correctness.
  */
 
 #include "../../src/ring_buffer.h"
 #include <unity.h>
-#include <stdio.h>
 #include <string.h>
 
 void setUp(void) {
@@ -16,89 +16,232 @@ void tearDown(void) {
     // Empty
 }
 
-static void test_rb_push_and_linearize(void) {
-    uint8_t backing[10];
+void test_init_empty(void) {
     RingBuffer rb;
-    rb_init(&rb, backing, sizeof(backing));
+    ring_buffer_init(&rb);
 
-    TEST_ASSERT_EQUAL_UINT32(0, rb_count(&rb));
+    TEST_ASSERT_EQUAL_UINT32(0, ring_buffer_available(&rb));
 
-    rb_push(&rb, 0xAA);
-    rb_push(&rb, 0xBB);
-    rb_push(&rb, 0xCC);
-    TEST_ASSERT_EQUAL_UINT32(3, rb_count(&rb));
-
-    uint8_t out[10];
-    size_t len = rb_linearize(&rb, out, sizeof(out));
-    TEST_ASSERT_EQUAL_UINT32(3, len);
-    TEST_ASSERT_EQUAL_HEX8(0xAA, out[0]);
-    TEST_ASSERT_EQUAL_HEX8(0xBB, out[1]);
-    TEST_ASSERT_EQUAL_HEX8(0xCC, out[2]);
+    uint8_t byte;
+    TEST_ASSERT_FALSE(ring_buffer_pop(&rb, &byte));
 }
 
-static void test_rb_wrap_around(void) {
-    uint8_t backing[5];
+void test_push_pop_basic(void) {
     RingBuffer rb;
-    rb_init(&rb, backing, sizeof(backing));
+    ring_buffer_init(&rb);
 
-    /* Push 7 bytes into a 5-byte capacity buffer */
-    for (uint8_t i = 1; i <= 7; i++) {
-        rb_push(&rb, i);
+    TEST_ASSERT_TRUE(ring_buffer_push(&rb, 0xAA));
+    TEST_ASSERT_TRUE(ring_buffer_push(&rb, 0xBB));
+    TEST_ASSERT_EQUAL_UINT32(2, ring_buffer_available(&rb));
+
+    uint8_t byte;
+    TEST_ASSERT_TRUE(ring_buffer_pop(&rb, &byte));
+    TEST_ASSERT_EQUAL_HEX8(0xAA, byte);
+
+    TEST_ASSERT_TRUE(ring_buffer_pop(&rb, &byte));
+    TEST_ASSERT_EQUAL_HEX8(0xBB, byte);
+
+    TEST_ASSERT_EQUAL_UINT32(0, ring_buffer_available(&rb));
+    TEST_ASSERT_FALSE(ring_buffer_pop(&rb, &byte));
+}
+
+void test_fill_to_capacity(void) {
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+
+    /* SPSC ring buffer holds CAPACITY-1 elements (one slot wasted) */
+    for (size_t i = 0; i < RING_BUFFER_CAPACITY - 1; i++) {
+        bool ok = ring_buffer_push(&rb, (uint8_t)(i & 0xFF));
+        TEST_ASSERT_TRUE(ok);
     }
 
-    TEST_ASSERT_EQUAL_UINT32(5, rb_count(&rb));  /* Capped at capacity */
+    TEST_ASSERT_EQUAL_UINT32(RING_BUFFER_CAPACITY - 1, ring_buffer_available(&rb));
 
-    uint8_t out[5];
-    size_t len = rb_linearize(&rb, out, sizeof(out));
-    TEST_ASSERT_EQUAL_UINT32(5, len);
-    
-    /* The first 2 bytes (1, 2) were overwritten.
-     * We should see 3, 4, 5, 6, 7. */
-    TEST_ASSERT_EQUAL_UINT8(3, out[0]);
-    TEST_ASSERT_EQUAL_UINT8(4, out[1]);
-    TEST_ASSERT_EQUAL_UINT8(5, out[2]);
-    TEST_ASSERT_EQUAL_UINT8(6, out[3]);
-    TEST_ASSERT_EQUAL_UINT8(7, out[4]);
+    /* Verify FIFO order */
+    for (size_t i = 0; i < RING_BUFFER_CAPACITY - 1; i++) {
+        uint8_t byte;
+        TEST_ASSERT_TRUE(ring_buffer_pop(&rb, &byte));
+        TEST_ASSERT_EQUAL_HEX8((uint8_t)(i & 0xFF), byte);
+    }
 }
 
-static void test_rb_consume(void) {
-    uint8_t backing[5];
+void test_overflow_drops_oldest(void) {
     RingBuffer rb;
-    rb_init(&rb, backing, sizeof(backing));
+    ring_buffer_init(&rb);
 
-    rb_push(&rb, 1);
-    rb_push(&rb, 2);
-    rb_push(&rb, 3);
-    TEST_ASSERT_EQUAL_UINT32(3, rb_count(&rb));
+    /* Fill completely (CAPACITY-1 items) */
+    for (size_t i = 0; i < RING_BUFFER_CAPACITY - 1; i++) {
+        ring_buffer_push(&rb, (uint8_t)i);
+    }
 
-    rb_consume(&rb, 2);
-    TEST_ASSERT_EQUAL_UINT32(1, rb_count(&rb));
+    /* Push one more — should overflow, dropping oldest */
+    bool no_overflow = ring_buffer_push(&rb, 0xFF);
+    TEST_ASSERT_FALSE(no_overflow);  /* Overflow indicator */
 
-    uint8_t out[5];
-    size_t len = rb_linearize(&rb, out, sizeof(out));
-    TEST_ASSERT_EQUAL_UINT32(1, len);
-    TEST_ASSERT_EQUAL_UINT8(3, out[0]);
+    /* Available should still be CAPACITY-1 */
+    TEST_ASSERT_EQUAL_UINT32(RING_BUFFER_CAPACITY - 1, ring_buffer_available(&rb));
 
-    /* Push more to wrap */
-    rb_push(&rb, 4);
-    rb_push(&rb, 5);
-    rb_push(&rb, 6);
-    rb_push(&rb, 7);
-    
-    TEST_ASSERT_EQUAL_UINT32(5, rb_count(&rb));
-    len = rb_linearize(&rb, out, sizeof(out));
-    TEST_ASSERT_EQUAL_UINT32(5, len);
-    TEST_ASSERT_EQUAL_UINT8(3, out[0]);
-    TEST_ASSERT_EQUAL_UINT8(4, out[1]);
-    TEST_ASSERT_EQUAL_UINT8(5, out[2]);
-    TEST_ASSERT_EQUAL_UINT8(6, out[3]);
-    TEST_ASSERT_EQUAL_UINT8(7, out[4]);
+    /* First byte should be 0x01 (0x00 was dropped) */
+    uint8_t byte;
+    TEST_ASSERT_TRUE(ring_buffer_pop(&rb, &byte));
+    TEST_ASSERT_EQUAL_HEX8(0x01, byte);
+}
+
+void test_peek_without_consuming(void) {
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+
+    ring_buffer_push(&rb, 'H');
+    ring_buffer_push(&rb, 'i');
+    ring_buffer_push(&rb, '!');
+
+    uint8_t byte;
+    TEST_ASSERT_TRUE(ring_buffer_peek(&rb, 0, &byte));
+    TEST_ASSERT_EQUAL_HEX8('H', byte);
+    TEST_ASSERT_TRUE(ring_buffer_peek(&rb, 1, &byte));
+    TEST_ASSERT_EQUAL_HEX8('i', byte);
+    TEST_ASSERT_TRUE(ring_buffer_peek(&rb, 2, &byte));
+    TEST_ASSERT_EQUAL_HEX8('!', byte);
+    TEST_ASSERT_FALSE(ring_buffer_peek(&rb, 3, &byte));
+
+    /* Available unchanged — peek doesn't consume */
+    TEST_ASSERT_EQUAL_UINT32(3, ring_buffer_available(&rb));
+}
+
+void test_discard(void) {
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+
+    for (uint8_t i = 0; i < 10; i++) {
+        ring_buffer_push(&rb, i);
+    }
+
+    ring_buffer_discard(&rb, 5);
+    TEST_ASSERT_EQUAL_UINT32(5, ring_buffer_available(&rb));
+
+    uint8_t byte;
+    TEST_ASSERT_TRUE(ring_buffer_pop(&rb, &byte));
+    TEST_ASSERT_EQUAL_HEX8(5, byte);  /* First 5 bytes (0..4) were discarded */
+}
+
+void test_discard_more_than_available(void) {
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+
+    ring_buffer_push(&rb, 0xAA);
+    ring_buffer_push(&rb, 0xBB);
+
+    ring_buffer_discard(&rb, 100);  /* More than available */
+    TEST_ASSERT_EQUAL_UINT32(0, ring_buffer_available(&rb));
+}
+
+void test_snapshot_copies_without_consuming(void) {
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+
+    uint8_t input[] = {0xAA, 0x55, 0x01, 0x02, 0x03};
+    for (size_t i = 0; i < sizeof(input); i++) {
+        ring_buffer_push(&rb, input[i]);
+    }
+
+    uint8_t snapshot[10];
+    size_t copied = ring_buffer_snapshot(&rb, snapshot, sizeof(snapshot));
+    TEST_ASSERT_EQUAL_UINT32(5, copied);
+    TEST_ASSERT_EQUAL_MEMORY(input, snapshot, 5);
+
+    /* Available unchanged */
+    TEST_ASSERT_EQUAL_UINT32(5, ring_buffer_available(&rb));
+}
+
+void test_snapshot_partial(void) {
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+
+    for (uint8_t i = 0; i < 20; i++) {
+        ring_buffer_push(&rb, i);
+    }
+
+    uint8_t snapshot[5];
+    size_t copied = ring_buffer_snapshot(&rb, snapshot, 5);
+    TEST_ASSERT_EQUAL_UINT32(5, copied);
+    TEST_ASSERT_EQUAL_HEX8(0, snapshot[0]);
+    TEST_ASSERT_EQUAL_HEX8(4, snapshot[4]);
+}
+
+void test_clear(void) {
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+
+    ring_buffer_push(&rb, 0xAA);
+    ring_buffer_push(&rb, 0xBB);
+    ring_buffer_clear(&rb);
+
+    TEST_ASSERT_EQUAL_UINT32(0, ring_buffer_available(&rb));
+
+    uint8_t byte;
+    TEST_ASSERT_FALSE(ring_buffer_pop(&rb, &byte));
+}
+
+void test_wrap_around_correctness(void) {
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+
+    /* Push and pop many times to wrap head/tail around the buffer */
+    for (int cycle = 0; cycle < 3; cycle++) {
+        for (size_t i = 0; i < 200; i++) {
+            ring_buffer_push(&rb, (uint8_t)(i & 0xFF));
+        }
+        for (size_t i = 0; i < 200; i++) {
+            uint8_t byte;
+            bool ok = ring_buffer_pop(&rb, &byte);
+            TEST_ASSERT_TRUE(ok);
+            TEST_ASSERT_EQUAL_HEX8((uint8_t)(i & 0xFF), byte);
+        }
+        TEST_ASSERT_EQUAL_UINT32(0, ring_buffer_available(&rb));
+    }
+}
+
+void test_null_safety(void) {
+    TEST_ASSERT_FALSE(ring_buffer_push(nullptr, 0));
+    TEST_ASSERT_FALSE(ring_buffer_pop(nullptr, nullptr));
+    TEST_ASSERT_EQUAL_UINT32(0, ring_buffer_available(nullptr));
+    TEST_ASSERT_FALSE(ring_buffer_peek(nullptr, 0, nullptr));
+
+    RingBuffer rb;
+    ring_buffer_init(&rb);
+    TEST_ASSERT_FALSE(ring_buffer_pop(&rb, nullptr));
+    TEST_ASSERT_FALSE(ring_buffer_peek(&rb, 0, nullptr));
+    TEST_ASSERT_EQUAL_UINT32(0, ring_buffer_snapshot(&rb, nullptr, 10));
+    TEST_ASSERT_EQUAL_UINT32(0, ring_buffer_snapshot(nullptr, nullptr, 10));
+
+    /* These should not crash */
+    ring_buffer_init(nullptr);
+    ring_buffer_clear(nullptr);
+    ring_buffer_discard(nullptr, 5);
+}
+
+void test_bitmask_vs_modulo(void) {
+    /* Verify that & (CAPACITY - 1) produces the same result
+     * as % CAPACITY for all relevant index values. */
+    for (size_t i = 0; i < RING_BUFFER_CAPACITY * 3; i++) {
+        TEST_ASSERT_EQUAL_UINT32((i % RING_BUFFER_CAPACITY), (i & RING_BUFFER_MASK));
+    }
 }
 
 int main(void) {
     UNITY_BEGIN();
-    RUN_TEST(test_rb_push_and_linearize);
-    RUN_TEST(test_rb_wrap_around);
-    RUN_TEST(test_rb_consume);
+    RUN_TEST(test_init_empty);
+    RUN_TEST(test_push_pop_basic);
+    RUN_TEST(test_fill_to_capacity);
+    RUN_TEST(test_overflow_drops_oldest);
+    RUN_TEST(test_peek_without_consuming);
+    RUN_TEST(test_discard);
+    RUN_TEST(test_discard_more_than_available);
+    RUN_TEST(test_snapshot_copies_without_consuming);
+    RUN_TEST(test_snapshot_partial);
+    RUN_TEST(test_clear);
+    RUN_TEST(test_wrap_around_correctness);
+    RUN_TEST(test_null_safety);
+    RUN_TEST(test_bitmask_vs_modulo);
     return UNITY_END();
 }
