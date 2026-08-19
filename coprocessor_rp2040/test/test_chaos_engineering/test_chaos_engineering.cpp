@@ -21,9 +21,8 @@ void tearDown(void) {
 }
 
 static void test_uart_flood_with_hidden_valid_packet(void) {
-    uint8_t rx_backing_buffer[TOTAL_PACKET_SIZE * 3];
     RingBuffer uart_rb;
-    rb_init(&uart_rb, rx_backing_buffer, sizeof(rx_backing_buffer));
+    ring_buffer_init(&uart_rb);
 
     uint16_t targets[NUM_PWM_VALS] = {100, 200, 300, 400, 500};
     uint8_t valid_packet[TOTAL_PACKET_SIZE];
@@ -48,12 +47,12 @@ static void test_uart_flood_with_hidden_valid_packet(void) {
             }
         }
         
-        rb_push(&uart_rb, byte_in);
+        ring_buffer_push(&uart_rb, byte_in);
         
         /* main.cpp loop logic */
-        if (rb_count(&uart_rb) >= TOTAL_PACKET_SIZE) {
+        if (ring_buffer_available(&uart_rb) >= TOTAL_PACKET_SIZE) {
             uint8_t linear_buf[TOTAL_PACKET_SIZE * 3];
-            size_t lin_len = rb_linearize(&uart_rb, linear_buf, sizeof(linear_buf));
+            size_t lin_len = ring_buffer_snapshot(&uart_rb, linear_buf, sizeof(linear_buf));
 
             PacketData packet;
             size_t consumed = 0;
@@ -69,7 +68,7 @@ static void test_uart_flood_with_hidden_valid_packet(void) {
                 }
                 
                 if (consumed > 0) {
-                    rb_consume(&uart_rb, consumed);
+                    ring_buffer_discard(&uart_rb, consumed);
                 }
             }
         }
