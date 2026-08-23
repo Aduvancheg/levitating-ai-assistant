@@ -14,9 +14,12 @@
 
 #if defined(ARDUINO)
 #include <Arduino.h>
+#include <WiFi.h>
+#include <ArduinoOTA.h>
 #include "bno085_fusion.h"
 #include "smart_coil.h"
 #include "qi_relay_guard.h"
+#include "wifi_ble_onboarding.h"
 
 /* ---- Configuration ------------------------------------------------ */
 
@@ -43,7 +46,8 @@ typedef enum {
     STATE_RELAY_WAIT_ISOLATE, /* Wait for Qi relay to finish isolating */
     STATE_COIL_UPDATE,        /* Compute and apply coil duty */
     STATE_RELAY_WAIT_RESTORE, /* Wait for Qi relay to finish restoring */
-    STATE_HEALTH_CHECK        /* I2C watchdog check */
+    STATE_HEALTH_CHECK,       /* I2C watchdog check */
+    STATE_OTA_LOCKED          /* Over-The-Air firmware update in progress */
 } AgentState;
 
 /* ---- Runtime state ------------------------------------------------ */
@@ -79,6 +83,23 @@ static void wdt_feed(void) {}
 void setup() {
     Serial.begin(115200);
 
+    /* Initialise Wi-Fi, BLE GATT Server (if needed), and UDP Handover listener */
+    wifi_ble_onboarding_init();
+
+    if (WiFi.status() == WL_CONNECTED) {
+        ArduinoOTA.onStart([]() {
+            Serial.println("[OTA] Update started. Locking coil.");
+            agent_state = STATE_OTA_LOCKED;
+            // Force smart coil off during OTA
+            update_smart_coil(0, 0, COIL_GAIN, millis(), &coil_state);
+            qi_relay_restore(); // Safely connect Qi for passive levitation power
+        });
+        ArduinoOTA.onEnd([]() {
+            Serial.println("\n[OTA] Update complete.");
+        });
+        ArduinoOTA.begin();
+    }
+
     /* Initialise subsystems */
     bno085_init(BNO085_SDA_PIN, BNO085_SCL_PIN);
     smart_coil_init(MOSFET_PIN);
@@ -104,8 +125,16 @@ void loop() {
     /* Feed hardware watchdog every iteration */
     wdt_feed();
 
+    if (WiFi.status() == WL_CONNECTED) {
+        ArduinoOTA.handle();
+    }
+
     /* ---- State machine -------------------------------------------- */
     switch (agent_state) {
+
+    case STATE_OTA_LOCKED:
+        /* Do nothing, wait for OTA to complete and reboot */
+        break;
 
     case STATE_IDLE:
         if (now - last_loop_ms >= LOOP_INTERVAL_MS) {

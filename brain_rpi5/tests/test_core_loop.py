@@ -75,6 +75,15 @@ class TestComplementaryFilter:
         result = filt.fuse(hall_z_mm=50.0, tof_z_mm=60.0)
         assert 50.0 <= result <= 60.0
 
+    def test_fuse_filters_nan_and_inf(self):
+        filt = ComplementaryFilter()
+        # Initial valid readings
+        filt.fuse(hall_z_mm=49.0, tof_z_mm=49.0)
+        # Inject NaN/Inf
+        res_nan = filt.fuse(hall_z_mm=float('nan'), tof_z_mm=float('inf'))
+        # Should fallback to 49.0 (previous valid)
+        assert res_nan == 49.0
+
 
 # =================================================================
 # PID Controller
@@ -299,20 +308,39 @@ class TestDryRunMode:
 class TestThermalModel:
 
     def test_thermal_throttling_triggers_and_cools(self):
-        model = ThermalModel(heat_capacity=50.0, cooling_rate=10.0)
-        duties = [100, 100, 100, 100, 100]  # Avg 100
-        
-        # dt = 0.5, net heat = (100 - 10) * 0.5 = 45
-        assert not model.update(0.5, duties)
-        assert abs(model.current_heat - 45.0) < 1e-4
-        
-        # dt = 0.5, net heat = +45 -> 90 > 50 -> triggers
-        assert model.update(0.5, duties)
-        
-        # Cool down: duties = 0
+        # High heating coeff to test heating quickly
+        model = ThermalModel(heating_coeff=20.0, cooling_coeff=1.0)
+        duties = [460, 460, 460, 460, 460]  # Max duty (sum(duty/460)^2 = 5)
+
+        # Ambient is 25.0 °C
+        assert model.estimated_temp_c == 25.0
+        assert not model.throttling
+
+        # dt = 0.3s -> heating = 20 * 5 * 0.3 = 30°C -> temp ~ 55°C (< 75°C)
+        assert not model.update(0.3, duties)
+        assert not model.throttling
+        assert model.estimated_temp_c > 50.0
+
+        # Another dt = 0.3s -> temp exceeds 75°C -> throttling triggers
+        assert model.update(0.3, duties)
+        assert model.throttling
+        assert model.estimated_temp_c > 75.0
+
+        # Hysteresis test: cool down with 0 duties.
+        # dt = 0.1s: cooling down, but temp is still above 55°C -> throttling should remain True
         zero_duties = [0, 0, 0, 0, 0]
-        # dt = 5.0, net heat = (0 - 10) * 5.0 = -50 -> 40 < 50 -> False
-        assert not model.update(5.0, zero_duties)
+        model.estimated_temp_c = 65.0
+        model.throttling = True
+        assert model.update(0.01, zero_duties)  # Stays True above 55°C
+
+        # Cool below 55°C -> throttling resets to False
+        model.estimated_temp_c = 54.0
+        assert not model.update(0.01, zero_duties)
+        assert not model.throttling
+
+        # Cool for a long time -> should not drop below ambient 25°C
+        model.update(100.0, zero_duties)
+        assert model.estimated_temp_c >= 25.0
 
 class TestNegativeScenarios:
 
@@ -338,3 +366,25 @@ class TestNegativeScenarios:
         
         assert loop.state_physical_lock is True
         assert loop._last_duties == [0, 0, 0, 0, 0]
+
+    @pytest.mark.asyncio
+    async def test_slew_rate_limit_clamps_pwm_changes(self):
+        """TEST-8: Verify that PWM changes are clamped to 10 units per tick (Slew-Rate)."""
+        from unittest.mock import MagicMock
+        mock_serial = MagicMock()
+        loop = LevitationCoreLoop(serial_port=mock_serial, dry_run=False)
+        
+        # Manually force the previous duties to 460
+        loop._last_duties = [460, 460, 460, 460, 460]
+        
+        # Trigger an immediate drop to 0 by injecting a huge Z error (e.g. Z=900)
+        # Z=900 means error = 30 - 900 = -870. The PID will output a huge negative value,
+        # which will map to a target duty of 0 for all coils.
+        async def fake_sensors():
+            return {"hall_z_mm": 900.0, "tof_xyz": (0.0, 0.0, 900.0)}
+            
+        await loop.run(read_sensors_callback=fake_sensors, max_iterations=1)
+        
+        # Because of slew rate limiter, duty shouldn't drop to 0. It should drop to 450.
+        # Max drop is 10 units per iteration.
+        assert loop._last_duties == [450, 450, 450, 450, 450]

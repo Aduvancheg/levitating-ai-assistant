@@ -88,6 +88,15 @@ bool set_pwm_duty(uint8_t channel, uint16_t duty) {
     /* Architecture §2: hard clamp to MAX_DUTY_LIMIT (≈45 %).
      * We clamp instead of rejecting so PID overshoot is gracefully handled. */
     uint16_t safe_duty = clamp_duty(duty);
+    uint16_t current = channel_duties[channel];
+
+    /* RP-10 (Firmware Slew-Rate Limiter): limit rate of change to 10 units per ms */
+    int16_t diff = (int16_t)safe_duty - (int16_t)current;
+    if (diff > 10) {
+        safe_duty = current + 10;
+    } else if (diff < -10) {
+        safe_duty = current - 10;
+    }
 
     channel_duties[channel] = safe_duty;
     hw_pwm_set(channel_pins[channel], safe_duty);

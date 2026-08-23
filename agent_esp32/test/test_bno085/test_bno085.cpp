@@ -21,20 +21,8 @@ void tearDown(void) {
 }
 
 void test_identity_quaternion_parsing(void) {
-    /*
-     * Identity quaternion: q_w = 1.0, q_x = q_y = q_z = 0.0
-     * In Q14 encoding: q_real = 16384 (0x4000), others = 0
-     */
-    uint8_t raw_identity[10] = {
-        0x01, 0x00,   /* Report ID */
-        0x00, 0x00,   /* Q_i = 0 */
-        0x00, 0x00,   /* Q_j = 0 */
-        0x00, 0x00,   /* Q_k = 0 */
-        0x00, 0x40    /* Q_real = 16384 (0x4000 LE) */
-    };
-
     OrientationData orientation;
-    bool res = bno085_parse_raw_packet(raw_identity, 10, &orientation);
+    bool res = bno085_test_compute_euler(1.0f, 0.0f, 0.0f, 0.0f, &orientation);
     TEST_ASSERT_TRUE(res);
     TEST_ASSERT_TRUE(orientation.valid);
 
@@ -51,16 +39,9 @@ void test_identity_quaternion_parsing(void) {
 }
 
 void test_quaternion_normalization(void) {
-    uint8_t raw[10] = {
-        0x01, 0x00,         /* Report ID */
-        0x00, 0x10,         /* Q_i = 4096 (0x1000 LE) */
-        0x00, 0x10,         /* Q_j = 4096 */
-        0x00, 0x10,         /* Q_k = 4096 */
-        0x00, 0x10          /* Q_real = 4096 */
-    };
-
     OrientationData orientation;
-    bool res = bno085_parse_raw_packet(raw, 10, &orientation);
+    /* Pass an unnormalized quaternion */
+    bool res = bno085_test_compute_euler(10.0f, 10.0f, 10.0f, 10.0f, &orientation);
     TEST_ASSERT_TRUE(res);
     TEST_ASSERT_TRUE(orientation.valid);
 
@@ -74,33 +55,14 @@ void test_quaternion_normalization(void) {
 
 void test_degenerate_quaternion_rejected(void) {
     /* All zeros — magnitude = 0, cannot normalize → invalid */
-    uint8_t raw_zero[10] = {
-        0x01, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x00, 0x00
-    };
-
     OrientationData orientation;
-    bool res = bno085_parse_raw_packet(raw_zero, 10, &orientation);
-    TEST_ASSERT_FALSE(res);
-    TEST_ASSERT_FALSE(orientation.valid);
-}
-
-void test_short_packet_rejected(void) {
-    uint8_t short_buf[5] = {0x01, 0x00, 0x00, 0x00, 0x00};
-
-    OrientationData orientation;
-    bool res = bno085_parse_raw_packet(short_buf, 5, &orientation);
+    bool res = bno085_test_compute_euler(0.0f, 0.0f, 0.0f, 0.0f, &orientation);
     TEST_ASSERT_FALSE(res);
     TEST_ASSERT_FALSE(orientation.valid);
 }
 
 void test_null_args_safety(void) {
-    OrientationData orientation;
-    TEST_ASSERT_FALSE(bno085_parse_raw_packet(NULL, 10, &orientation));
-    TEST_ASSERT_FALSE(bno085_parse_raw_packet(NULL, 0, NULL));
+    TEST_ASSERT_FALSE(bno085_test_compute_euler(1.0f, 0.0f, 0.0f, 0.0f, NULL));
 }
 
 void test_i2c_timeout_no_reset(void) {
@@ -134,7 +96,6 @@ int main(void) {
     RUN_TEST(test_identity_quaternion_parsing);
     RUN_TEST(test_quaternion_normalization);
     RUN_TEST(test_degenerate_quaternion_rejected);
-    RUN_TEST(test_short_packet_rejected);
     RUN_TEST(test_null_args_safety);
     RUN_TEST(test_i2c_timeout_no_reset);
     RUN_TEST(test_i2c_timeout_triggers_reset);

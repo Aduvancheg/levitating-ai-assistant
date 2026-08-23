@@ -51,14 +51,11 @@ bool bno085_init(uint8_t sda_pin, uint8_t scl_pin);
 bool bno085_read_orientation(OrientationData *out_data);
 
 /**
- * @brief Decode a raw BNO085 rotation vector report into quaternion + Euler.
- *
- * Packet format: [Report ID (2B)] [Q_i Q14] [Q_j Q14] [Q_k Q14] [Q_real Q14]
- * Performs normalization after Q14 scaling.
- *
- * Exposed for unit testing with mock I2C data.
+ * @brief Decode a quaternion into Euler angles. Exposed for unit testing only.
  */
-bool bno085_parse_raw_packet(const uint8_t *raw_bytes, uint16_t len, OrientationData *out_data);
+#ifdef UNIT_TEST
+bool bno085_test_compute_euler(float qw, float qx, float qy, float qz, OrientationData *out_data);
+#endif
 
 /**
  * @brief I2C bus watchdog — detects timeout and triggers bus reset.
