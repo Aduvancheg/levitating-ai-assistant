@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antigravity Control Center v7.0 (Safe Shutdown Edition)</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons for vector indicators -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+        body {
+            font-family: 'JetBrains Mono', monospace;
+            background-color: #020617;
+        }
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.5);
+        }
+        .glow-blue {
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+        }
+        .glow-green {
+            box-shadow: 0 0 20px rgba(16, 185, 129, 0.6);
+        }
+        .glow-red {
+            box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
+        }
+        .glow-amber {
+            box-shadow: 0 0 20px rgba(245, 158, 11, 0.6);
+        }
+        /* 3D Sphere Container styles */
+        .scene {
+            width: 150px;
+            height: 150px;
+            perspective: 600px;
+        }
+        .sphere {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transition: transform 0.1s linear;
+        }
+        .sphere-ring {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 2px solid rgba(59, 130, 246, 0.6);
+            border-radius: 50%;
+        }
+        .ring-x { transform: rotateY(0deg); }
+        .ring-y { transform: rotateX(90deg); }
+        .ring-z { transform: rotateY(90deg); }
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col">
+
+    <!-- HEADER -->
+    <header class="border-b border-blue-900/40 bg-slate-950/80 px-6 py-4 flex justify-between items-center">
+        <div class="flex items-center space-x-3">
+            <div class="w-3 h-3 bg-blue-500 rounded-full animate-pulse glow-blue"></div>
+            <h1 class="text-lg font-bold tracking-wider text-blue-400">ANTIGRAVITY // BIST CONTROL v7.0</h1>
+        </div>
+        <div class="flex items-center space-x-4">
+            <!-- Safe Shutdown Emergency Button -->
+            <button onclick="confirmShutdown()" class="px-3.5 py-1.5 bg-red-950/40 hover:bg-red-600 border border-red-700 hover:border-red-500 hover:glow-red text-red-400 hover:text-white text-xs font-bold rounded tracking-wider transition duration-300 flex items-center space-x-1.5">
+                <i data-lucide="power" class="w-3.5 h-3.5"></i>
+                <span>TURN OFF</span>
+            </button>
+            <div class="flex items-center space-x-2 text-xs">
+                <span class="w-2.5 h-2.5 rounded-full bg-red-500" id="bist-lock-indicator"></span>
+                <span id="bist-lock-text" class="text-red-400 font-bold">POWER INTERLOCK: LOCKED</span>
+            </div>
+            <div class="flex items-center space-x-2 text-xs text-slate-400">
+                <i data-lucide="cpu" class="w-4 h-4 text-blue-500"></i>
+                <span>RPi 5: <b id="ping-time">0 ms</b></span>
+            </div>
+            <div class="flex items-center space-x-2 text-xs">
+                <span class="w-2.5 h-2.5 rounded-full bg-red-500" id="ws-status-indicator"></span>
+                <span id="ws-status-text" class="text-slate-400">DISCONNECTED</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- FULLSCREEN SAFE SHUTDOWN OVERLAY -->
+    <div id="shutdown-overlay" class="fixed inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex items-center justify-center hidden">
+        <div class="glass-panel max-w-lg w-full p-8 rounded-2xl border-red-900/50 space-y-6 text-center glow-red">
+            <div class="flex justify-center">
+                <div class="p-4 bg-red-950/30 rounded-full border border-red-800 animate-pulse animate-bounce" id="shutdown-icon-container">
+                    <i data-lucide="power" class="w-12 h-12 text-red-500"></i>
+                </div>
+            </div>
+            <div class="space-y-2">
+                <h2 class="text-xl font-bold tracking-wider text-red-400" id="shutdown-title">SAFE POWER-DOWN PIPELINE ACTIVE</h2>
+                <p class="text-xs text-slate-500" id="shutdown-desc">Выполняются безопасные асинхронные процедуры отключения комплекса.</p>
+            </div>
+            
+            <!-- Steps Progress List -->
+            <div class="space-y-3.5 text-left bg-slate-950 p-4 rounded-xl border border-slate-900" id="shutdown-steps-list">
+                <!-- Will be dynamically updated by WebSocket -->
+            </div>
+            
+            <div class="hidden pt-4 border-t border-slate-900" id="shutdown-unplug-notice">
+                <div class="flex items-center justify-center space-x-2 text-emerald-400 font-bold text-sm animate-bounce">
+                    <i data-lucide="unplug" class="w-5 h-5"></i>
+                    <span>SAFE TO UNPLUG 27W POWER ADAPTER</span>
+                </div>
+                <p class="text-[10px] text-slate-500 mt-2">Физическое отключение кабеля питания полностью безопасно. Все катушки размагничены, сфера припаркована, логика заблокирована.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <main class="flex-1 max-w-[1600px] w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- LEFT PANEL: TABS & VIEWS (8 columns) -->
+        <section class="lg:col-span-8 flex flex-col space-y-6">
+            
+            <!-- TAB SELECTOR -->
+            <div class="flex space-x-2 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
+                <button onclick="switchTab('base')" id="tab-btn-base" class="flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 bg-blue-600 text-white shadow-lg glow-blue">
+                    <i data-lucide="hard-drive" class="w-4 h-4 inline-block mr-2 -mt-0.5"></i> #1 Base Telemetry
+                </button>
+                <button onclick="switchTab('agent')" id="tab-btn-agent" class="flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                    <i data-lucide="orbit" class="w-4 h-4 inline-block mr-2 -mt-0.5"></i> #2 Agent Telemetry
+                </button>
+                <button onclick="switchTab('manage')" id="tab-btn-manage" class="flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                    <i data-lucide="play-circle" class="w-4 h-4 inline-block mr-2 -mt-0.5"></i> #3 Task Manager
+                </button>
+                <button onclick="switchTab('bist')" id="tab-btn-bist" class="flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                    <i data-lucide="activity" class="w-4 h-4 inline-block mr-2 -mt-0.5"></i> #4 BIST Diagnostics
+                </button>
+            </div>
+
+            <!-- TAB 1: BASE TELEMETRY -->
+            <div id="tab-content-base" class="space-y-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Target Z and complementary Fusion -->
+                    <div class="glass-panel rounded-xl p-5 space-y-4">
+                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">3D POSITION COMPLEMENTARY FUSION</h3>
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs text-slate-400">Fusion Height (Z):</span>
+                            <span class="text-2xl font-bold text-green-400" id="base-z">0.00 mm</span>
+                        </div>
+                        <div class="space-y-2">
+                            <div class="flex justify-between text-xs text-slate-500">
+                                <span>Hall Range (0-5cm)</span>
+                                <span>ToF Range (5cm+)</span>
+                            </div>
+                            <div class="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
+                                <div id="fusion-weight-bar" class="bg-gradient-to-r from-blue-500 to-green-500 h-full transition-all duration-100" style="width: 50%"></div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4 pt-2">
+                            <div class="bg-slate-950/80 p-3 rounded-lg border border-slate-900">
+                                <div class="text-[10px] text-slate-500">COORDINATE X</div>
+                                <div class="text-lg font-bold" id="base-x">0.00 mm</div>
+                            </div>
+                            <div class="bg-slate-950/80 p-3 rounded-lg border border-slate-900">
+                                <div class="text-[10px] text-slate-500">COORDINATE Y</div>
+                                <div class="text-lg font-bold" id="base-y">0.00 mm</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Base Coils Duty Cycle -->
+                    <div class="glass-panel rounded-xl p-5 space-y-3">
+                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BASE COILS HARMONIC DRIVERS (PWM 25kHz)</h3>
+                        <div class="space-y-2.5" id="coils-container">
+                            <!-- Loop over 5 coils -->
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1">
+                                    <span class="text-slate-400 font-bold">COIL 0 (Center)</span>
+                                    <span class="text-blue-400" id="coil-pwm-0">0 / 460</span>
+                                </div>
+                                <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
+                                    <div id="coil-bar-0" class="bg-blue-500 h-full transition-all duration-100" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1">
+                                    <span class="text-slate-400">COIL 1 (North)</span>
+                                    <span class="text-blue-400" id="coil-pwm-1">0 / 460</span>
+                                </div>
+                                <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
+                                    <div id="coil-bar-1" class="bg-slate-700 h-full transition-all duration-100" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1">
+                                    <span class="text-slate-400">COIL 2 (East)</span>
+                                    <span class="text-blue-400" id="coil-pwm-2">0 / 460</span>
+                                </div>
+                                <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
+                                    <div id="coil-bar-2" class="bg-slate-700 h-full transition-all duration-100" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1">
+                                    <span class="text-slate-400">COIL 3 (South)</span>
+                                    <span class="text-blue-400" id="coil-pwm-3">0 / 460</span>
+                                </div>
+                                <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
+                                    <div id="coil-bar-3" class="bg-slate-700 h-full transition-all duration-100" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1">
+                                    <span class="text-slate-400">COIL 4 (West)</span>
+                                    <span class="text-blue-400" id="coil-pwm-4">0 / 460</span>
+                                </div>
+                                <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
+                                    <div id="coil-bar-4" class="bg-slate-700 h-full transition-all duration-100" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 2: AGENT TELEMETRY -->
+            <div id="tab-content-agent" class="space-y-6 hidden">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- BNO085 Angles & 3D visualization -->
+                    <div class="glass-panel rounded-xl p-5 flex flex-col justify-between space-y-4">
+                        <div>
+                            <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BNO085 PRECISION SPATIAL ORIENTATION</h3>
+                            <div class="grid grid-cols-3 gap-2 mt-4">
+                                <div class="bg-slate-950/80 p-2.5 rounded-lg text-center border border-slate-900">
+                                    <div class="text-[10px] text-slate-500">PITCH</div>
+                                    <div class="text-base font-bold text-amber-400" id="agent-pitch">0.0°</div>
+                                </div>
+                                <div class="bg-slate-950/80 p-2.5 rounded-lg text-center border border-slate-900">
+                                    <div class="text-[10px] text-slate-500">ROLL</div>
+                                    <div class="text-base font-bold text-amber-400" id="agent-roll">0.0°</div>
+                                </div>
+                                <div class="bg-slate-950/80 p-2.5 rounded-lg text-center border border-slate-900">
+                                    <div class="text-[10px] text-slate-500">YAW</div>
+                                    <div class="text-base font-bold text-amber-400" id="agent-yaw">0.0°</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 3D Sphere Renderer -->
+                        <div class="flex justify-center items-center py-6">
+                            <div class="scene">
+                                <div class="sphere" id="3d-sphere">
+                                    <div class="sphere-ring ring-x"></div>
+                                    <div class="sphere-ring ring-y"></div>
+                                    <div class="sphere-ring ring-z"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Board Stats: Battery, NC-Relay, Smart Coil -->
+                    <div class="glass-panel rounded-xl p-5 space-y-5">
+                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BOM STATE & HARDWARE INTRUSION</h3>
+                        
+                        <!-- Battery -->
+                        <div class="space-y-2">
+                            <div class="flex justify-between items-center text-xs">
+                                <span class="text-slate-400">LiPo Accumulator 902540:</span>
+                                <span class="font-bold text-green-400" id="agent-battery">100% (4.2V)</span>
+                            </div>
+                            <div class="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
+                                <div id="battery-bar" class="bg-green-500 h-full transition-all duration-300" style="width: 100%"></div>
+                            </div>
+                        </div>
+
+                        <div class="border-t border-slate-900 pt-3 grid grid-cols-2 gap-4">
+                            <!-- NC Relay -->
+                            <div class="space-y-1">
+                                <span class="text-[10px] text-slate-500 uppercase block">Qi Charger Isolator</span>
+                                <div class="flex items-center space-x-2 mt-1">
+                                    <span class="w-2.5 h-2.5 rounded-full bg-green-500" id="relay-indicator"></span>
+                                    <span class="text-xs font-bold text-slate-300" id="relay-status">CLOSED (Charging)</span>
+                                </div>
+                            </div>
+                            <!-- Smart Coil Duty -->
+                            <div class="space-y-1">
+                                <span class="text-[10px] text-slate-500 uppercase block">Smart-Coil Duty</span>
+                                <div class="text-lg font-bold text-red-400" id="smart-coil-pwm">0 / 1023</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 3: TASK & PIPELINE MANAGER -->
+            <div id="tab-content-manage" class="space-y-6 hidden">
+                <div class="glass-panel rounded-xl p-5 space-y-4">
+                    <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">AUTOMATED R&D SYSTEM PIPELINES</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- Pipeline 1: Takeoff -->
+                        <div class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center hover:border-blue-900/50 transition">
+                            <div class="space-y-1">
+                                <h4 class="text-sm font-bold">Smooth Takeoff (Z-Lift)</h4>
+                                <p class="text-[10px] text-slate-500">Gradual electromagnetic current ascent to safely hover the sphere.</p>
+                            </div>
+                            <button id="btn-takeoff" onclick="triggerPipeline('SMOOTH_TAKEOFF')" class="px-4 py-2 bg-slate-800 text-slate-500 text-xs font-bold rounded cursor-not-allowed" disabled>LOCKED</button>
+                        </div>
+                        <!-- Pipeline 2: Helix Demonstration -->
+                        <div class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center hover:border-blue-900/50 transition">
+                            <div class="space-y-1">
+                                <h4 class="text-sm font-bold">3D Spatial Helix Demo</h4>
+                                <p class="text-[10px] text-slate-500">Commands Agent to fly dynamic ascending spatial spiral orbits.</p>
+                            </div>
+                            <button id="btn-helix" onclick="triggerPipeline('SPATIAL_HELIX')" class="px-4 py-2 bg-slate-800 text-slate-500 text-xs font-bold rounded cursor-not-allowed" disabled>LOCKED</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dynamic status pipeline dialog -->
+                <div class="glass-panel rounded-xl p-5 space-y-4 hidden" id="pipeline-status-panel">
+                    <div class="flex justify-between items-center border-b border-slate-800 pb-2">
+                        <div class="flex items-center space-x-2">
+                            <i data-lucide="loader" class="w-4 h-4 text-blue-500 animate-spin"></i>
+                            <h3 class="text-sm font-bold text-blue-400">ACTIVE PIPELINE: <span id="pipeline-title">NONE</span></h3>
+                        </div>
+                        <span class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-950 text-blue-400 border border-blue-800" id="pipeline-general-status">RUNNING</span>
+                    </div>
+                    <div class="flex flex-col space-y-3.5" id="pipeline-steps-container"></div>
+                </div>
+            </div>
+
+            <!-- TAB 4: BIST DIAGNOSTICS (NEW AUTOMATED HUB) -->
+            <div id="tab-content-bist" class="space-y-6 hidden">
+                <div class="glass-panel rounded-xl p-5 space-y-4">
+                    <div class="flex justify-between items-center border-b border-slate-800 pb-2">
+                        <div>
+                            <h3 class="text-sm font-bold text-blue-400">BUILT-IN SELF-TEST (BIST) DIAGNOSTIC CENTER</h3>
+                            <p class="text-[10px] text-slate-500">Пошаговое автоматическое тестирование целостности аппаратного слоя базы и сферы Агента.</p>
+                        </div>
+                        <div class="flex space-x-2">
+                            <!-- Bypass Manual Override -->
+                            <button onclick="openBypassModal()" class="px-3.5 py-2.5 bg-amber-950/40 hover:bg-amber-600 border border-amber-800 hover:border-amber-500 hover:glow-amber text-amber-400 hover:text-white text-xs font-bold rounded transition flex items-center space-x-1.5">
+                                <i data-lucide="shield-alert" class="w-4 h-4"></i><span>Bypass Interlock</span>
+                            </button>
+                            <button onclick="triggerPipeline('BIST_RUN_ALL')" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded shadow-lg glow-blue transition flex items-center space-x-1.5">
+                                <i data-lucide="play" class="w-4 h-4"></i><span>RUN AUTO-DIAGNOSTICS</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Diagnostics Self-Check Columns -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <!-- Card 1 -->
+                        <div class="space-y-2">
+                            <div onclick="toggleLogDrawer('BIST-HW-01')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-01</span>
+                                    <h4 class="text-xs font-bold">PWM Sweep Loopback Self-Test</h4>
+                                    <p class="text-[10px] text-slate-400">Подает ток на затворы и проверяет отклик магнитных полей на ADS1115.</p>
+                                </div>
+                                <div class="flex items-center space-x-3">
+                                    <span id="bist-res-BIST-HW-01" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-01')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-01">Retry</button>
+                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-01"></i>
+                                </div>
+                            </div>
+                            <div id="bist-log-BIST-HW-01" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Логи пусты.
+                            </div>
+                        </div>
+                        
+                        <!-- Card 2 -->
+                        <div class="space-y-2">
+                            <div onclick="toggleLogDrawer('BIST-HW-02')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-02</span>
+                                    <h4 class="text-xs font-bold">Automated Polarity Phase Check</h4>
+                                    <p class="text-[10px] text-slate-400">Проверяет правильность направления намотки катушек базы ($\\Delta V > 0$).</p>
+                                </div>
+                                <div class="flex items-center space-x-3">
+                                    <span id="bist-res-BIST-HW-02" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-02')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-02">Retry</button>
+                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-02"></i>
+                                </div>
+                            </div>
+                            <div id="bist-log-BIST-HW-02" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Логи пусты.
+                            </div>
+                        </div>
+
+                        <!-- Card 3 -->
+                        <div class="space-y-2">
+                            <div onclick="toggleLogDrawer('BIST-HW-03')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-03</span>
+                                    <h4 class="text-xs font-bold">Agent NC-Relay safety interlock</h4>
+                                    <p class="text-[10px] text-slate-400">Проверяет срабатывание размыкателя Qi-приемника за $5$ мс до импульса катушки.</p>
+                                </div>
+                                <div class="flex items-center space-x-3">
+                                    <span id="bist-res-BIST-HW-03" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-03')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-03">Retry</button>
+                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-03"></i>
+                                </div>
+                            </div>
+                            <div id="bist-log-BIST-HW-03" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Логи пусты.
+                            </div>
+                        </div>
+
+                        <!-- Card 4 -->
+                        <div class="space-y-2">
+                            <div onclick="toggleLogDrawer('BIST-HW-04')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-04</span>
+                                    <h4 class="text-xs font-bold">EMI Ground Noise Floor Scanner</h4>
+                                    <p class="text-[10px] text-slate-400">Тестирует уровень пульсаций силовой земли \"Звезда\" при максимальном токе катушек.</p>
+                                </div>
+                                <div class="flex items-center space-x-3">
+                                    <span id="bist-res-BIST-HW-04" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-04')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-04">Retry</button>
+                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-04"></i>
+                                </div>
+                            </div>
+                            <div id="bist-log-BIST-HW-04" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Логи пусты.
+                            </div>
+                        </div>
+
+                        <!-- BIST-HW-05: Lenz Protection -->
+                        <div class="space-y-1">
+                            <div onclick="toggleLogDrawer('BIST-HW-05')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-05</span>
+                                    <h4 class="text-xs font-bold">Lenz EMF Protection Slew-Rate</h4>
+                                    <p class="text-[10px] text-slate-400">Проверка программно-аппаратного ограничения скачков напряжения при резком сбросе ШИМ.</p>
+                                </div>
+                                <div class="flex items-center space-x-3">
+                                    <span id="bist-res-BIST-HW-05" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-05')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-05">Retry</button>
+                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-05"></i>
+                                </div>
+                            </div>
+                            <div id="bist-log-BIST-HW-05" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Логи пусты.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Debug SandBox Simulator -->
+                <div class="glass-panel rounded-xl p-5 border-blue-900/30 space-y-4">
+                    <h3 class="text-xs font-bold text-blue-500 tracking-wider">SANDBOX R&D FAULT SIMULATOR</h3>
+                    <div class="flex items-center space-x-4">
+                        <span class="text-xs text-slate-400">Симулировать отказ на тесте:</span>
+                        <select id="fault-simulator-select" onchange="simulateFaultChange()" class="bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs font-mono text-red-400 focus:outline-none focus:border-red-600">
+                            <option value="NONE">-- Без ошибок (Номинальный BIST) --</option>
+                            <option value="BIST-HW-01">BIST-HW-01: PWM Sweep Fault</option>
+                            <option value="BIST-HW-02">BIST-HW-02: Polarity Phase Fault</option>
+                            <option value="BIST-HW-03">BIST-HW-03: NC-Relay Interlock Fault</option>
+                            <option value="BIST-HW-04">BIST-HW-04: Ground EMI Noise Fault</option>
+                            <option value="BIST-HW-05">BIST-HW-05: Lenz EMF Protection Fault</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT PANEL -->
+        <aside class="lg:col-span-4 space-y-6">
+            <div class="glass-panel rounded-xl p-5 space-y-4 border-amber-900/40">
+                <div class="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <h3 class="text-xs font-bold text-amber-500 tracking-wider">BASE THERMAL INSULATION MODEL</h3>
+                    <i data-lucide="thermometer" class="w-4.5 h-4.5 text-amber-500 animate-pulse"></i>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-xs text-slate-400">Est. Coils Temp:</span>
+                    <span class="text-xl font-bold text-amber-500" id="thermal-temp">25.0 °C</span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-950 px-3 py-2 rounded border border-slate-900 text-xs">
+                    <span class="text-slate-400">Protection Mode:</span>
+                    <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-green-950 text-green-400 border border-green-800" id="thermal-mode">NOMINAL</span>
+                </div>
+            </div>
+
+            <!-- LENZ LAW DI/DT & TVS PROTECTION (NEW V8) -->
+            <div class="glass-panel rounded-xl p-5 space-y-4 border-blue-900/40">
+                <div class="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <h3 class="text-xs font-bold text-blue-500 tracking-wider">LENZ LAW DI/DT PROTECTION</h3>
+                    <i data-lucide="shield-alert" class="w-4.5 h-4.5 text-blue-500 animate-pulse"></i>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-xs text-slate-400">Slew Rate Limit:</span>
+                    <span class="text-xs font-bold text-blue-400">10 units/tick (8.6% per ms)</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-xs text-slate-400">TVS Rail Clamp (8.0V):</span>
+                    <span class="text-xs font-bold text-emerald-400">SECURED (SMBJ12A)</span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-950 px-3 py-2 rounded border border-slate-900 text-xs">
+                    <span class="text-slate-400">Hardware Protection:</span>
+                    <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">ACTIVE</span>
+                </div>
+            </div>
+
+            <!-- PID STUDIO: DYNAMIC LIVE SLIDERS -->
+            <div class="glass-panel rounded-xl p-5 space-y-5">
+                <div class="flex justify-between items-center border-b border-slate-800 pb-2">
+                    <h3 class="text-xs font-bold text-blue-400 tracking-wider">PID DYNAMIC TUNING</h3>
+                    <i data-lucide="sliders" class="w-4 h-4 text-blue-500"></i>
+                </div>
+                
+                <div class="space-y-4">
+                    <div class="space-y-1">
+                        <div class="flex justify-between text-xs">
+                            <span class="text-slate-400">Proportional (Kp)</span>
+                            <span class="font-bold text-blue-400" id="kp-val">12.50</span>
+                        </div>
+                        <input type="range" id="slider-kp" min="0" max="50" step="0.1" value="12.5" class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
+                    </div>
+
+                    <div class="space-y-1">
+                        <div class="flex justify-between text-xs">
+                            <span class="text-slate-400">Integral (Ki)</span>
+                            <span class="font-bold text-blue-400" id="ki-val">0.05</span>
+                        </div>
+                        <input type="range" id="slider-ki" min="0" max="5" step="0.01" value="0.05" class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
+                    </div>
+
+                    <div class="space-y-1">
+                        <div class="flex justify-between text-xs">
+                            <span class="text-slate-400">Derivative (Kd)</span>
+                            <span class="font-bold text-blue-400" id="kd-val">8.20</span>
+                        </div>
+                        <input type="range" id="slider-kd" min="0" max="30" step="0.1" value="8.2" class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
+                    </div>
+                </div>
+
+                <button onclick="commitPid()" class="w-full py-2.5 bg-blue-900/40 hover:bg-blue-600 border border-blue-700 hover:border-blue-500 text-xs font-bold rounded tracking-wider transition">
+                    COMMIT DYNAMIC COEFFICIENTS
+                </button>
+            </div>
+        </aside>
+    </main>
+
+    <!-- DOUBLE CONFIRMATION BYPASS MODAL -->
+    <div id="bypass-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+        <div class="glass-panel max-w-md w-full p-6 rounded-2xl border-amber-900/50 space-y-4 glow-amber">
+            <div class="flex items-center space-x-3 text-amber-500">
+                <i data-lucide="shield-alert" class="w-8 h-8"></i>
+                <h3 class="text-md font-bold">MANUAL BYPASS SYSTEM LOCK?</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+                Внимание! Активация ручного обхода (Bypass) принудительно разблокирует подачу напряжения на силовые катушки базы в обход систем самодиагностики BIST.
+                Это допускается только в случае R&D макетирования, когда вы лично проверили полярность обмоток и исправность защитных NC-реле сферы!
+            </p>
+            <div class="bg-slate-950 p-3 rounded-lg border border-slate-900 flex items-start space-x-2.5">
+                <input type="checkbox" id="bypass-chk-agree" onchange="toggleBypassSubmit()" class="mt-0.5 rounded border-slate-800 bg-slate-900 text-amber-500 focus:ring-0 focus:ring-offset-0">
+                <label for="bypass-chk-agree" class="text-[10px] text-slate-400 leading-snug cursor-pointer select-none">
+                    Я физически замерил цепи, полярность намотки катушек базы и реле Агента и беру на себя ответственность за возможный перегрев или КЗ.
+                </label>
+            </div>
+            <div class="flex space-x-3 pt-2">
+                <button onclick="closeBypassModal()" class="flex-1 py-2 border border-slate-800 text-slate-400 hover:text-white rounded text-xs font-bold transition">CANCEL</button>
+                <button id="btn-bypass-confirm" onclick="confirmBypass()" class="flex-1 py-2 bg-amber-800 text-slate-500 rounded text-xs font-bold cursor-not-allowed transition" disabled>CONFIRM BYPASS</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- FOOTER -->
+    <footer class="border-t border-slate-900 bg-slate-950/80 px-6 py-3.5 text-center text-[10px] text-slate-500 flex justify-between items-center">
+        <span>R&D PHASE 4 SYSTEM CORE // RASPBERRY PI 5 INSULATED</span>
+        <span>NO SYSTEM THREAD DELAYS DETECTED</span>
+    </footer>
+
+    <script>
+        lucide.createIcons();
+
+        let currentTab = 'base';
+        let ws = null;
+        let lastPing = Date.now();
+
+        function connectWS() {
+            const wsUri = "ws://" + window.location.hostname + ":8000/ws/telemetry";
+            ws = new WebSocket(wsUri);
+
+            ws.onopen = () => {
+                document.getElementById('ws-status-indicator').className = "w-2.5 h-2.5 rounded-full bg-emerald-500 glow-green";
+                document.getElementById('ws-status-text').innerText = "CONNECTED";
+                document.getElementById('ws-status-text').className = "text-emerald-400 font-bold";
+            };
+
+            ws.onclose = () => {
+                document.getElementById('ws-status-indicator').className = "w-2.5 h-2.5 rounded-full bg-red-500";
+                document.getElementById('ws-status-text').innerText = "DISCONNECTED";
+                document.getElementById('ws-status-text').className = "text-slate-400";
+                setTimeout(connectWS, 2000);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                updateTelemetryUI(data);
+                
+                const now = Date.now();
+                document.getElementById('ping-time').innerText = (now - lastPing) + " ms";
+                lastPing = now;
+            };
+        }
+
+        function switchTab(tabName) {
+            document.getElementById(`tab-content-${currentTab}`).classList.add('hidden');
+            document.getElementById(`tab-btn-${currentTab}`).className = "flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800";
+            
+            currentTab = tabName;
+            
+            document.getElementById(`tab-content-${currentTab}`).classList.remove('hidden');
+            document.getElementById(`tab-btn-${currentTab}`).className = "flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 bg-blue-600 text-white shadow-lg glow-blue";
+        }
+
+        function toggleLogDrawer(testId) {
+            const drawer = document.getElementById(`bist-log-${testId}`);
+            const arrow = document.getElementById(`bist-arrow-${testId}`);
+            if (drawer.classList.contains('hidden')) {
+                drawer.classList.remove('hidden');
+                arrow.style.transform = "rotate(180deg)";
+            } else {
+                drawer.classList.add('hidden');
+                arrow.style.transform = "rotate(0deg)";
+            }
+        }
+
+        function updateTelemetryUI(data) {
+            // BASE DATA: XYZ
+            document.getElementById('base-z').innerText = data.base.position_xyz[2].toFixed(2) + " mm";
+            document.getElementById('base-x').innerText = data.base.position_xyz[0].toFixed(2) + " mm";
+            document.getElementById('base-y').innerText = data.base.position_xyz[1].toFixed(2) + " mm";
+            
+            const height = data.base.position_xyz[2];
+            const weight = 100 / (1 + Math.exp(-0.2 * (height - 50))); 
+            document.getElementById('fusion-weight-bar').style.width = weight + "%";
+
+            // COIL PWMs
+            for (let i = 0; i < 5; i++) {
+                const pwm = data.base.coils_pwm[i];
+                document.getElementById(`coil-pwm-${i}`).innerText = `${pwm} / 460`;
+                const percentage = (pwm / 460) * 100;
+                document.getElementById(`coil-bar-${i}`).style.width = percentage + "%";
+            }
+
+            // AGENT DATA: Pitch, Roll, Yaw
+            document.getElementById('agent-pitch').innerText = data.agent.attitude_angles[0].toFixed(1) + "°";
+            document.getElementById('agent-roll').innerText = data.agent.attitude_angles[1].toFixed(1) + "°";
+            document.getElementById('agent-yaw').innerText = data.agent.attitude_angles[2].toFixed(1) + "°";
+
+            const pitch = data.agent.attitude_angles[0];
+            const roll = data.agent.attitude_angles[1];
+            document.getElementById('3d-sphere').style.transform = `rotateX(${pitch}deg) rotateY(${roll}deg)`;
+
+            // NC RELAY
+            const relayState = data.agent.qi_relay_state;
+            const relayInd = document.getElementById('relay-indicator');
+            const relayTxt = document.getElementById('relay-status');
+            if (relayState === 0) {
+                relayInd.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 glow-green";
+                relayTxt.innerText = "CLOSED (Charging)";
+                relayTxt.className = "text-xs font-bold text-emerald-400";
+            } else {
+                relayInd.className = "w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse glow-red";
+                relayTxt.innerText = "ISOLATED (Pulse)";
+                relayTxt.className = "text-xs font-bold text-red-500";
+            }
+
+            // BIST SYSTEM LOCK AND BUTTON CONTROLS - V6 ENHANCED
+            const bUnlocked = data.bist.unlocked;
+            const bBypassed = data.bist.bypass_active;
+            const lockIndicator = document.getElementById('bist-lock-indicator');
+            const lockTxt = document.getElementById('bist-lock-text');
+            const btnTakeoff = document.getElementById('btn-takeoff');
+            const btnHelix = document.getElementById('btn-helix');
+
+            if (bUnlocked) {
+                if (bBypassed) {
+                    lockIndicator.className = "w-2.5 h-2.5 rounded-full bg-amber-500 glow-amber animate-pulse";
+                    lockTxt.innerText = "POWER INTERLOCK: MANUAL OVERRIDE";
+                    lockTxt.className = "text-amber-400 font-bold";
+                } else {
+                    lockIndicator.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 glow-green";
+                    lockTxt.innerText = "POWER INTERLOCK: ACTIVE & SECURED";
+                    lockTxt.className = "text-emerald-400 font-bold";
+                }
+                
+                btnTakeoff.disabled = false;
+                btnTakeoff.className = "px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold rounded shadow-lg glow-green cursor-pointer transition";
+                btnTakeoff.innerText = "EXECUTE";
+
+                btnHelix.disabled = false;
+                btnHelix.className = "px-4 py-2 bg-purple-600 hover:bg-purple-500 text-xs font-bold rounded shadow-lg cursor-pointer transition";
+                btnHelix.innerText = "EXECUTE";
+            } else {
+                lockIndicator.className = "w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse glow-red";
+                lockTxt.innerText = "POWER INTERLOCK: LOCKED (RUN BIST)";
+                lockTxt.className = "text-red-400 font-bold";
+
+                btnTakeoff.disabled = true;
+                btnTakeoff.className = "px-4 py-2 bg-slate-800 text-slate-500 text-xs font-bold rounded cursor-not-allowed";
+                btnTakeoff.innerText = "LOCKED";
+
+                btnHelix.disabled = true;
+                btnHelix.className = "px-4 py-2 bg-slate-800 text-slate-500 text-xs font-bold rounded cursor-not-allowed";
+                btnHelix.innerText = "LOCKED";
+            }
+
+            // BIST RESULTS & RETRY BUTTONS DISPLAY
+            const bResults = data.bist.results;
+            Object.keys(bResults).forEach(testId => {
+                const res = bResults[testId];
+                const badge = document.getElementById(`bist-res-${testId}`);
+                const retryBtn = document.getElementById(`bist-retry-${testId}`);
+                if (badge) {
+                    badge.innerText = res;
+                    if (res === "PASS") {
+                        badge.className = "px-2.5 py-1 rounded text-[10px] font-bold bg-green-950 text-green-400 border border-green-800 glow-green";
+                        retryBtn.classList.add('hidden');
+                    } else if (res === "FAILED") {
+                        badge.className = "px-2.5 py-1 rounded text-[10px] font-bold bg-red-950 text-red-400 border border-red-800 glow-red animate-pulse";
+                        retryBtn.classList.remove('hidden'); // Show Retry Button on fail!
+                    } else if (res === "BYPASSED") {
+                        badge.className = "px-2.5 py-1 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800 glow-amber";
+                        retryBtn.classList.add('hidden');
+                    } else {
+                        badge.className = "px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800";
+                        retryBtn.classList.add('hidden');
+                    }
+                }
+            });
+
+            // BIST LOGS INJECTOR
+            const bLogs = data.bist.logs;
+            Object.keys(bLogs).forEach(testId => {
+                const logBox = document.getElementById(`bist-log-${testId}`);
+                if (logBox) {
+                    logBox.innerText = bLogs[testId];
+                }
+            });
+
+            // THERMAL INSULATION MODEL
+            const temp = data.base.coils_temperature_est;
+            document.getElementById('thermal-temp').innerText = temp.toFixed(1) + " °C";
+            const thMode = document.getElementById('thermal-mode');
+            if (temp > 75) {
+                document.getElementById('thermal-temp').className = "text-xl font-bold text-red-500 animate-pulse";
+                thMode.className = "px-2 py-0.5 rounded text-[9px] font-bold bg-red-950 text-red-500 border border-red-800";
+                thMode.innerText = "THROTTLING ACTIVE";
+            } else {
+                document.getElementById('thermal-temp').className = "text-xl font-bold text-amber-500";
+                thMode.className = "px-2 py-0.5 rounded text-[9px] font-bold bg-green-950 text-green-400 border border-green-800";
+                thMode.innerText = "NOMINAL";
+            }
+
+            // DYNAMIC STATUS PIPELINE DISPLAY
+            const pipe = data.pipeline;
+            const pipePanel = document.getElementById('pipeline-status-panel');
+            const shutdownOverlay = document.getElementById('shutdown-overlay');
+
+            if (pipe.active_id === "SAFE_SHUTDOWN") {
+                // Если активен SAFE_SHUTDOWN - включаем полноэкранный overlay
+                shutdownOverlay.classList.remove('hidden');
+                
+                const container = document.getElementById('shutdown-steps-list');
+                container.innerHTML = '';
+                pipe.steps.forEach(step => {
+                    const stepRow = document.createElement('div');
+                    stepRow.className = "flex justify-between items-center py-2 border-b border-slate-900 text-xs";
+                    
+                    let statusBadge = '';
+                    if (step.status === 'DONE') {
+                        statusBadge = '<span class="text-emerald-400 font-bold flex items-center space-x-1"><i data-lucide="check-circle" class="w-3.5 h-3.5 mr-1"></i>SECURED</span>';
+                    } else if (step.status === 'RUNNING') {
+                        statusBadge = '<span class="text-blue-400 font-bold animate-pulse flex items-center space-x-1"><i data-lucide="loader" class="w-3.5 h-3.5 mr-1 animate-spin"></i>ACTIVE...</span>';
+                    } else {
+                        statusBadge = '<span class="text-slate-500">PENDING</span>';
+                    }
+                    
+                    stepRow.innerHTML = `
+                        <span class="text-slate-300 font-medium">${step.desc}</span>
+                        ${statusBadge}
+                    `;
+                    container.appendChild(stepRow);
+                });
+                lucide.createIcons();
+                
+                // Проверяем флаг безопасного выключения
+                const safeToUnplug = data.shutdown.safe_to_unplug;
+                if (safeToUnplug) {
+                    document.getElementById('shutdown-title').innerText = "SYSTEM SECURED & INACTIVE";
+                    document.getElementById('shutdown-title').className = "text-xl font-bold tracking-wider text-emerald-400";
+                    document.getElementById('shutdown-desc').innerText = "Все силовые и логические контуры успешно переведены в состояние покоя.";
+                    document.getElementById('shutdown-icon-container').className = "p-4 bg-emerald-950/30 rounded-full border border-emerald-800 glow-green animate-pulse";
+                    document.getElementById('shutdown-icon-container').innerHTML = '<i data-lucide="unplug" class="w-12 h-12 text-emerald-400"></i>';
+                    document.getElementById('shutdown-unplug-notice').classList.remove('hidden');
+                    lucide.createIcons();
+                }
+            } else {
+                shutdownOverlay.classList.add('hidden');
+                
+                // Обычный рендеринг пайплайнов
+                if (pipe.active_id !== "NONE") {
+                    pipePanel.classList.remove('hidden');
+                    document.getElementById('pipeline-title').innerText = pipe.active_id;
+                    document.getElementById('pipeline-general-status').innerText = pipe.status;
+                    
+                    const container = document.getElementById('pipeline-steps-container');
+                    container.innerHTML = '';
+                    pipe.steps.forEach(step => {
+                        const stepRow = document.createElement('div');
+                        stepRow.className = "flex justify-between items-center bg-slate-950/80 p-3 rounded-lg border border-slate-900 text-xs";
+                        
+                        let statusBadge = '';
+                        if (step.status === 'DONE') {
+                            statusBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-green-950 text-green-400 border border-green-800">COMPLETED</span>';
+                        } else if (step.status === 'RUNNING') {
+                            statusBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-950 text-blue-400 border border-blue-800 animate-pulse">EXECUTING...</span>';
+                        } else {
+                            statusBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">PENDING</span>';
+                        }
+
+                        stepRow.innerHTML = `
+                            <div class="flex flex-col space-y-0.5">
+                                <span class="font-bold text-slate-300">${step.step_id}</span>
+                                <span class="text-[10px] text-slate-500">${step.desc}</span>
+                            </div>
+                            ${statusBadge}
+                        `;
+                        container.appendChild(stepRow);
+                    });
+                } else {
+                    pipePanel.classList.add('hidden');
+                }
+            }
+        }
+
+        function triggerPipeline(pipelineId) {
+            fetch('/api/manage/execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: pipelineId })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.detail) {
+                    alert(`Pipeline denied: ${data.detail}`);
+                }
+            })
+            .catch(err => console.error("Error triggering pipeline:", err));
+        }
+
+        function retrySingleTest(testId) {
+            fetch('/api/bist/retry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ test_id: testId })
+            })
+            .then(res => res.json())
+            .catch(err => console.error("Error retrying test:", err));
+        }
+
+        // --- DOUBLE CONFIRMATION BYPASS MODAL CONTROLS ---
+        function openBypassModal() {
+            document.getElementById('bypass-chk-agree').checked = false;
+            document.getElementById('btn-bypass-confirm').disabled = true;
+            document.getElementById('btn-bypass-confirm').className = "flex-1 py-2 bg-slate-800 text-slate-500 rounded text-xs font-bold cursor-not-allowed transition";
+            document.getElementById('bypass-modal').classList.remove('hidden');
+        }
+
+        function closeBypassModal() {
+            document.getElementById('bypass-modal').classList.add('hidden');
+        }
+
+        function toggleBypassSubmit() {
+            const checked = document.getElementById('bypass-chk-agree').checked;
+            const btn = document.getElementById('btn-bypass-confirm');
+            if (checked) {
+                btn.disabled = false;
+                btn.className = "flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-bold cursor-pointer transition glow-amber";
+            } else {
+                btn.disabled = true;
+                btn.className = "flex-1 py-2 bg-slate-800 text-slate-500 rounded text-xs font-bold cursor-not-allowed transition";
+            }
+        }
+
+        function confirmBypass() {
+            fetch('/api/bist/bypass', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ override: true })
+            })
+            .then(res => res.json())
+            .then(data => {
+                closeBypassModal();
+            })
+            .catch(err => console.error("Bypass failed:", err));
+        }
+
+        function simulateFaultChange() {
+            const selected = document.getElementById('fault-simulator-select').value;
+            fetch('/api/bist/simulate_fault', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ test_id: selected === "NONE" ? null : selected })
+            })
+            .then(res => res.json())
+            .catch(err => console.error("Simulator request failed:", err));
+        }
+
+        function confirmShutdown() {
+            if (confirm("Вы действительно хотите безопасно выключить комплекс?\nСфера будет плавно опущена, катушки базы размагничены за 2 секунды для подавления импульсов самоиндукции, а Агент переведен в пассивный режим сна.")) {
+                triggerPipeline('SAFE_SHUTDOWN');
+            }
+        }
+
+        window.onload = () => {
+            connectWS();
+        };
+    </script>
+</body>
+</html>

@@ -39,60 +39,44 @@ static void normalize_quaternion(OrientationData *d) {
     d->q_z *= inv_mag;
 }
 
-/* ---- Raw packet parsing + Euler conversion ------------------------ */
-
-bool bno085_parse_raw_packet(const uint8_t *raw_bytes, uint16_t len, OrientationData *out_data) {
-    if (raw_bytes == nullptr || out_data == nullptr || len < 10) {
-        if (out_data) out_data->valid = false;
-        return false;
-    }
-
-    /* Packet layout: [Report ID (2B)] [Q_i LE16] [Q_j LE16] [Q_k LE16] [Q_real LE16] */
-    int16_t q_i_raw = (int16_t)((uint16_t)raw_bytes[2] | ((uint16_t)raw_bytes[3] << 8));
-    int16_t q_j_raw = (int16_t)((uint16_t)raw_bytes[4] | ((uint16_t)raw_bytes[5] << 8));
-    int16_t q_k_raw = (int16_t)((uint16_t)raw_bytes[6] | ((uint16_t)raw_bytes[7] << 8));
-    int16_t q_r_raw = (int16_t)((uint16_t)raw_bytes[8] | ((uint16_t)raw_bytes[9] << 8));
-
-    /* Q14 fixed-point to float: scale = 1 / 2^14 = 1 / 16384.0 */
-    static const float Q14_SCALE = 1.0f / 16384.0f;
-    out_data->q_x = q_i_raw * Q14_SCALE;
-    out_data->q_y = q_j_raw * Q14_SCALE;
-    out_data->q_z = q_k_raw * Q14_SCALE;
-    out_data->q_w = q_r_raw * Q14_SCALE;
-
-    /* Normalize to prevent drift from Q14 rounding errors */
-    out_data->valid = true;  /* set before normalize — it may clear it */
+#ifdef UNIT_TEST
+bool bno085_test_compute_euler(float qw, float qx, float qy, float qz, OrientationData *out_data) {
+    if (out_data == nullptr) return false;
+    out_data->q_w = qw;
+    out_data->q_x = qx;
+    out_data->q_y = qy;
+    out_data->q_z = qz;
+    out_data->valid = true;
     normalize_quaternion(out_data);
-    if (!out_data->valid) {
-        return false;
-    }
+    if (!out_data->valid) return false;
 
-    /* Convert normalized quaternion to Euler angles (ZYX convention) */
-    float qx = out_data->q_x;
-    float qy = out_data->q_y;
-    float qz = out_data->q_z;
-    float qw = out_data->q_w;
+    /* Compute Euler (same as compute_euler but duplicating here since compute_euler is static, 
+     * or we can just call compute_euler if we pull it up... Wait, compute_euler is not compiled in UNIT_TEST 
+     * because it's inside #if defined(ARDUINO)? Let's check. 
+     * Actually, let's just do the math here to be safe and independent. */
+    float qx2 = out_data->q_x;
+    float qy2 = out_data->q_y;
+    float qz2 = out_data->q_z;
+    float qw2 = out_data->q_w;
 
-    /* Roll (X-axis rotation) */
-    float sinr_cosp = 2.0f * (qw * qx + qy * qz);
-    float cosr_cosp = 1.0f - 2.0f * (qx * qx + qy * qy);
+    float sinr_cosp = 2.0f * (qw2 * qx2 + qy2 * qz2);
+    float cosr_cosp = 1.0f - 2.0f * (qx2 * qx2 + qy2 * qy2);
     out_data->roll = atan2f(sinr_cosp, cosr_cosp) * (180.0f / (float)M_PI);
 
-    /* Pitch (Y-axis rotation) — clamped at gimbal lock */
-    float sinp = 2.0f * (qw * qy - qz * qx);
+    float sinp = 2.0f * (qw2 * qy2 - qz2 * qx2);
     if (fabsf(sinp) >= 1.0f) {
         out_data->pitch = copysignf(90.0f, sinp);
     } else {
         out_data->pitch = asinf(sinp) * (180.0f / (float)M_PI);
     }
 
-    /* Yaw (Z-axis rotation) */
-    float siny_cosp = 2.0f * (qw * qz + qx * qy);
-    float cosy_cosp = 1.0f - 2.0f * (qy * qy + qz * qz);
+    float siny_cosp = 2.0f * (qw2 * qz2 + qx2 * qy2);
+    float cosy_cosp = 1.0f - 2.0f * (qy2 * qy2 + qz2 * qz2);
     out_data->yaw = atan2f(siny_cosp, cosy_cosp) * (180.0f / (float)M_PI);
 
     return true;
 }
+#endif
 
 /* ---- I2C bus watchdog --------------------------------------------- */
 
@@ -117,6 +101,9 @@ bool bno085_was_bus_reset(void) {
 
 #if defined(ARDUINO)
 #include <Wire.h>
+#include <Adafruit_BNO08x.h>
+
+static Adafruit_BNO08x bno08x;
 
 void bno085_i2c_bus_reset(uint8_t sda_pin, uint8_t scl_pin) {
     /*
@@ -156,41 +143,68 @@ bool bno085_init(uint8_t sda_pin, uint8_t scl_pin) {
 
     Wire.begin(sda_pin, scl_pin, 400000);  /* 400 kHz fast-mode I2C */
 
-    /* NOTE: A production implementation should use the Adafruit_BNO08x
-     * library to configure SHTP reports (rotation vector at 100 Hz).
-     * The raw Wire.requestFrom() approach below is a simplified
-     * placeholder — it works for basic I2C communication validation
-     * but does not implement the full SHTP handshake.
-     *
-     * TODO: Replace with Adafruit_BNO08x::begin() + enableReport()
-     * once the lib_deps are installed and validated on hardware.       */
+    /* Initialize Adafruit_BNO08x over I2C at address 0x4A */
+    if (!bno08x.begin_I2C(0x4A, &Wire, 0)) {
+        return false;
+    }
+    
+    /* Request Rotation Vector (quaternions) at 100 Hz (10,000 microseconds) */
+    if (!bno08x.enableReport(SH2_ROTATION_VECTOR, 10000)) {
+        return false;
+    }
+
     return true;
+}
+
+static void compute_euler(OrientationData *out_data) {
+    /* Convert normalized quaternion to Euler angles (ZYX convention) */
+    float qx = out_data->q_x;
+    float qy = out_data->q_y;
+    float qz = out_data->q_z;
+    float qw = out_data->q_w;
+
+    /* Roll (X-axis rotation) */
+    float sinr_cosp = 2.0f * (qw * qx + qy * qz);
+    float cosr_cosp = 1.0f - 2.0f * (qx * qx + qy * qy);
+    out_data->roll = atan2f(sinr_cosp, cosr_cosp) * (180.0f / (float)M_PI);
+
+    /* Pitch (Y-axis rotation) — clamped at gimbal lock */
+    float sinp = 2.0f * (qw * qy - qz * qx);
+    if (fabsf(sinp) >= 1.0f) {
+        out_data->pitch = copysignf(90.0f, sinp);
+    } else {
+        out_data->pitch = asinf(sinp) * (180.0f / (float)M_PI);
+    }
+
+    /* Yaw (Z-axis rotation) */
+    float siny_cosp = 2.0f * (qw * qz + qx * qy);
+    float cosy_cosp = 1.0f - 2.0f * (qy * qy + qz * qz);
+    out_data->yaw = atan2f(siny_cosp, cosy_cosp) * (180.0f / (float)M_PI);
 }
 
 bool bno085_read_orientation(OrientationData *out_data) {
     if (out_data == nullptr) return false;
 
-    uint8_t raw[10];
-    Wire.requestFrom((uint8_t)0x4A, (uint8_t)10);
-
-    uint16_t idx = 0;
-    uint32_t start = millis();
-    while (Wire.available() && idx < 10) {
-        raw[idx++] = Wire.read();
-        /* Guard against infinite loop from EMI-induced clock stretching */
-        if (millis() - start > 10) {
-            break;
+    sh2_SensorValue_t sensorValue;
+    if (bno08x.getSensorEvent(&sensorValue)) {
+        if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+            out_data->q_x = sensorValue.un.rotationVector.i;
+            out_data->q_y = sensorValue.un.rotationVector.j;
+            out_data->q_z = sensorValue.un.rotationVector.k;
+            out_data->q_w = sensorValue.un.rotationVector.real;
+            
+            out_data->valid = true;
+            normalize_quaternion(out_data);
+            if (!out_data->valid) return false;
+            
+            compute_euler(out_data);
+            
+            last_success_time = millis();
+            return true;
         }
     }
-
-    if (idx < 10) {
-        /* Incomplete read — trigger watchdog check with actual timestamps */
-        out_data->valid = false;
-        return false;
-    }
-
-    last_success_time = millis();
-    return bno085_parse_raw_packet(raw, 10, out_data);
+    
+    return false;
 }
 
 #else

@@ -5,9 +5,26 @@
  * All index arithmetic uses `& RING_BUFFER_MASK` instead of
  * `% RING_BUFFER_CAPACITY` for deterministic O(1) performance
  * on the RP2040 (which lacks a hardware divider in Cortex-M0+).
+ *
+ * Dual-Core safety (RP-CL-4, RP-9):
+ *   Memory barriers (__dmb) are placed after writes to volatile
+ *   indices to ensure cross-core visibility on the RP2040's
+ *   dual Cortex-M0+ architecture. The RP2040 has no hardware
+ *   cache, but __dmb ensures the write buffer is flushed before
+ *   the other core reads the index.
  */
 
 #include "ring_buffer.h"
+
+/* ---- Memory barrier abstraction ----------------------------------- */
+
+#if defined(TARGET_RP2040) || defined(PICO_BOARD) || defined(PICO_ON_DEVICE)
+  #include "hardware/sync.h"
+  #define MEMORY_BARRIER()  __dmb()
+#else
+  /* Native / host build — no barrier needed for single-threaded tests */
+  #define MEMORY_BARRIER()  do {} while(0)
+#endif
 
 /* ---- Init / Clear ------------------------------------------------- */
 
@@ -15,6 +32,7 @@ void ring_buffer_init(RingBuffer *rb) {
     if (rb == nullptr) return;
     rb->head_ = 0;
     rb->tail_ = 0;
+    MEMORY_BARRIER();
     /* No need to zero data[] — only indices matter for correctness */
 }
 
@@ -22,6 +40,7 @@ void ring_buffer_clear(RingBuffer *rb) {
     if (rb == nullptr) return;
     rb->head_ = 0;
     rb->tail_ = 0;
+    MEMORY_BARRIER();
 }
 
 /* ---- Producer: push ----------------------------------------------- */
@@ -36,13 +55,16 @@ bool ring_buffer_push(RingBuffer *rb, uint8_t byte) {
          * For UART streams, newest data is always more relevant
          * than stale bytes.                                           */
         rb->tail_ = (rb->tail_ + 1u) & RING_BUFFER_MASK;
+        MEMORY_BARRIER();
         rb->data[rb->head_] = byte;
         rb->head_ = next_head;
+        MEMORY_BARRIER();
         return false;  /* Overflow indicator */
     }
 
     rb->data[rb->head_] = byte;
     rb->head_ = next_head;
+    MEMORY_BARRIER();
     return true;
 }
 
@@ -55,8 +77,10 @@ bool ring_buffer_pop(RingBuffer *rb, uint8_t *out_byte) {
         return false;  /* Empty */
     }
 
+    MEMORY_BARRIER();
     *out_byte = rb->data[rb->tail_];
     rb->tail_ = (rb->tail_ + 1u) & RING_BUFFER_MASK;
+    MEMORY_BARRIER();
     return true;
 }
 
@@ -70,6 +94,7 @@ bool ring_buffer_peek(const RingBuffer *rb, size_t offset, uint8_t *out_byte) {
         return false;
     }
 
+    MEMORY_BARRIER();
     size_t index = (rb->tail_ + offset) & RING_BUFFER_MASK;
     *out_byte = rb->data[index];
     return true;
@@ -80,6 +105,7 @@ bool ring_buffer_peek(const RingBuffer *rb, size_t offset, uint8_t *out_byte) {
 size_t ring_buffer_available(const RingBuffer *rb) {
     if (rb == nullptr) return 0;
 
+    MEMORY_BARRIER();
     /* Cast to signed-safe arithmetic via the mask.
      * (head - tail) & MASK works correctly even when head < tail
      * because CAPACITY is a power of two.                             */
@@ -97,6 +123,7 @@ void ring_buffer_discard(RingBuffer *rb, size_t count) {
     }
 
     rb->tail_ = (rb->tail_ + count) & RING_BUFFER_MASK;
+    MEMORY_BARRIER();
 }
 
 /* ---- Snapshot: copy to linear buffer without consuming ------------ */
@@ -104,6 +131,7 @@ void ring_buffer_discard(RingBuffer *rb, size_t count) {
 size_t ring_buffer_snapshot(const RingBuffer *rb, uint8_t *out_buf, size_t max_len) {
     if (rb == nullptr || out_buf == nullptr) return 0;
 
+    MEMORY_BARRIER();
     size_t avail = ring_buffer_available(rb);
     size_t to_copy = (avail < max_len) ? avail : max_len;
 

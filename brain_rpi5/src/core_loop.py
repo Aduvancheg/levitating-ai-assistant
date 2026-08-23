@@ -100,6 +100,16 @@ class ComplementaryFilter:
 
     def fuse(self, hall_z_mm: float, tof_z_mm: float) -> float:
         """Combine Hall and ToF Z measurements via sigmoidal blending."""
+        if math.isnan(hall_z_mm) or math.isinf(hall_z_mm):
+            hall_z_mm = getattr(self, '_last_valid_hall', 0.0)
+        else:
+            self._last_valid_hall = hall_z_mm
+            
+        if math.isnan(tof_z_mm) or math.isinf(tof_z_mm):
+            tof_z_mm = getattr(self, '_last_valid_tof', 0.0)
+        else:
+            self._last_valid_tof = tof_z_mm
+            
         approx_z = (hall_z_mm + tof_z_mm) / 2.0
         hall_w, tof_w = self.compute_weights(approx_z)
         return hall_w * hall_z_mm + tof_w * tof_z_mm
@@ -275,31 +285,70 @@ class CoilMapper:
 class ThermalModel:
     """
     Estimates coil heating by integrating PWM duty cycles over time.
-    Triggers THERMAL_THROTTLING if the accumulated heat exceeds capacity.
+
+    Uses sum-of-squares of normalised duty cycles to model Joule heating
+    (P ∝ I² ∝ duty²).  Tracks an estimated coil temperature in °C.
+
+    Thresholds (quality-v4.md → RPI-CL-7):
+      - THROTTLE_ON  = 75 °C  → begin thermal throttling
+      - THROTTLE_OFF = 55 °C  → stop thermal throttling (hysteresis)
+
+    Throttling action: caller should reduce Target Z by 0.01 mm per tick.
     """
-    def __init__(self, heat_capacity: float = 50000.0, cooling_rate: float = 100.0) -> None:
-        self.heat_capacity = heat_capacity
-        self.cooling_rate = cooling_rate
-        self.current_heat: float = 0.0
+
+    THROTTLE_ON_C: float = 75.0
+    THROTTLE_OFF_C: float = 55.0
+    AMBIENT_C: float = 25.0
+    MAX_DUTY: float = 460.0  # matches RP2040 MAX_DUTY_LIMIT
+
+    def __init__(
+        self,
+        heating_coeff: float = 0.05,
+        cooling_coeff: float = 0.001,
+    ) -> None:
+        """
+        Args:
+            heating_coeff: Rate at which duty² raises the temperature.
+            cooling_coeff: Newton-cooling coefficient toward ambient.
+        """
+        self.heating_coeff = heating_coeff
+        self.cooling_coeff = cooling_coeff
+        self.estimated_temp_c: float = self.AMBIENT_C
+        self.throttling: bool = False
 
     def update(self, dt: float, duties: List[int]) -> bool:
         """
         Update the thermal model with the latest duty cycles.
+
+        Heating is proportional to the sum of (duty / MAX_DUTY)².
+        Cooling follows Newton's law toward AMBIENT_C.
+
         Returns True if throttling should be active.
         """
-        if not duties:
-            return False
-        
-        # Approximate heating by the average duty cycle
-        avg_duty = sum(duties) / len(duties)
-        
-        # Net heat change
-        self.current_heat += (avg_duty - self.cooling_rate) * dt
-        
-        if self.current_heat < 0.0:
-            self.current_heat = 0.0
-            
-        return self.current_heat > self.heat_capacity
+        if not duties or dt <= 0.0:
+            return self.throttling
+
+        # Joule heating: P ∝ Σ(duty²)
+        sum_duty_sq: float = sum(
+            (d / self.MAX_DUTY) ** 2 for d in duties
+        )
+
+        # Temperature change
+        heating = self.heating_coeff * sum_duty_sq * dt
+        cooling = self.cooling_coeff * (self.estimated_temp_c - self.AMBIENT_C) * dt
+        self.estimated_temp_c += heating - cooling
+
+        # Clamp to ambient (can't cool below room temp)
+        if self.estimated_temp_c < self.AMBIENT_C:
+            self.estimated_temp_c = self.AMBIENT_C
+
+        # Hysteresis thresholds
+        if self.estimated_temp_c > self.THROTTLE_ON_C:
+            self.throttling = True
+        elif self.estimated_temp_c < self.THROTTLE_OFF_C:
+            self.throttling = False
+
+        return self.throttling
 
 
 # =====================================================================
@@ -396,7 +445,7 @@ class LevitationCoreLoop:
         self.pid = TriAxisPID(kp=2.0, ki=0.1, kd=0.5, integral_limit=500.0)
         self.mapper = CoilMapper(max_duty=460)
         self.packer = UARTPacketBuilder()
-        self.thermal_model = ThermalModel(heat_capacity=50000.0, cooling_rate=100.0)
+        self.thermal_model = ThermalModel(heating_coeff=0.05, cooling_coeff=0.001)
 
         self._running: bool = False
         self._iteration_count: int = 0
@@ -409,6 +458,25 @@ class LevitationCoreLoop:
         # Max allowed Z velocity (mm/s). Free fall is ~9.8 m/s^2.
         # A sudden jump of > 2000 mm/s is physically impossible (sensor blocked / intercepted).
         self.MAX_DZ_DT: float = 2000.0
+
+    def setup_posix_realtime(self) -> None:
+        """
+        Elevate the process to real-time priority (SCHED_FIFO) and pin to a dedicated CPU core.
+        This fulfills RPI-CL-8 from quality-v4.md.
+        Requires root/sudo privileges. Will gracefully fall back if permission denied.
+        """
+        import os
+        try:
+            # Pin to CPU core 3
+            os.sched_setaffinity(0, {3})
+            # Set POSIX Real-Time priority (FIFO 99)
+            param = os.sched_param(99)
+            os.sched_setscheduler(0, os.SCHED_FIFO, param)
+            logger.info("Successfully elevated to SCHED_FIFO Priority 99 on CPU 3.")
+        except PermissionError:
+            logger.warning("Permission denied for SCHED_FIFO. Run with sudo for real-time performance!")
+        except AttributeError:
+            logger.warning("OS does not support POSIX schedulers (Windows/macOS?). Running normally.")
 
     async def run(
         self,
@@ -426,12 +494,13 @@ class LevitationCoreLoop:
                 }
             max_iterations: Stop after N iterations (None = run forever).
         """
+        self.setup_posix_realtime()
         self._running = True
         self._iteration_count = 0
 
         try:
             while self._running:
-                loop_start = time.monotonic()
+                loop_start = time.perf_counter()
 
                 # 1. Read sensors
                 try:
@@ -452,7 +521,7 @@ class LevitationCoreLoop:
                 measurement = (tof_x, tof_y, fused_z)
 
                 # 3. Time Delta
-                dt = time.monotonic() - loop_start
+                dt = time.perf_counter() - loop_start
                 if dt <= 0:
                     dt = self.TARGET_DT_S
 
@@ -478,8 +547,8 @@ class LevitationCoreLoop:
                 self.state_thermal_throttling = self.thermal_model.update(dt, self._last_duties)
                 active_setpoint = list(self.setpoint)
                 if self.state_thermal_throttling:
-                    # Gradually lower Target Z to cool down
-                    active_setpoint[2] = max(5.0, active_setpoint[2] - 0.5)
+                    # Gradually lower Target Z to cool down (0.01 mm/tick per RPI-CL-7)
+                    active_setpoint[2] = max(5.0, active_setpoint[2] - 0.01)
 
                 # 6. PID compute
                 pid_x, pid_y, pid_z = self.pid.compute(
@@ -488,10 +557,26 @@ class LevitationCoreLoop:
 
                 # 7. Map to 5 coil duties
                 duties = self.mapper.map(pid_x, pid_y, pid_z)
-                self._last_duties = duties
+                
+                # RPI-11: Software Slew-Rate Limiter (Lenz's Law protection)
+                # Max allowed PWM change per 1.16ms tick (860Hz) is 10
+                MAX_PWM_STEP_PER_TICK = 10
+                clamped_duties = []
+                for i in range(5):
+                    prev = self._last_duties[i]
+                    target = duties[i]
+                    diff = target - prev
+                    if diff > MAX_PWM_STEP_PER_TICK:
+                        clamped_duties.append(prev + MAX_PWM_STEP_PER_TICK)
+                    elif diff < -MAX_PWM_STEP_PER_TICK:
+                        clamped_duties.append(prev - MAX_PWM_STEP_PER_TICK)
+                    else:
+                        clamped_duties.append(target)
+                        
+                self._last_duties = clamped_duties
 
                 # 8. Send UART packet (or suppress in dry-run)
-                self._send_packet(duties)
+                self._send_packet(clamped_duties)
 
                 self._iteration_count += 1
 
@@ -499,7 +584,7 @@ class LevitationCoreLoop:
                     break
 
                 # 9. Pace to target rate
-                elapsed = time.monotonic() - loop_start
+                elapsed = time.perf_counter() - loop_start
                 sleep_time = self.TARGET_DT_S - elapsed
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
