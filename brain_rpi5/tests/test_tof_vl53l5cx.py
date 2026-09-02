@@ -74,10 +74,10 @@ class TestFindMinimumTrough:
 class TestCoordinateTranslation:
 
     def test_offset_applied_to_x(self):
-        """backlog LS-6: input (20, 5, 40) → base_x = 20 - 15 = 5."""
+        """backlog LS-6: input (20, 5, 40) → base_x = 20 - 45 = -25."""
         driver = ToFMatrixDriver()
         x, y, z = driver.translate_coordinates(20.0, 5.0, 40.0)
-        assert abs(x - 5.0) < 1e-4
+        assert abs(x - (-25.0)) < 1e-4
         assert abs(y - 5.0) < 1e-4
         assert abs(z - 40.0) < 1e-4
 
@@ -85,7 +85,7 @@ class TestCoordinateTranslation:
         """X can go negative if sphere is left of center."""
         driver = ToFMatrixDriver()
         x, y, z = driver.translate_coordinates(10.0, 0.0, 30.0)
-        assert abs(x - (-5.0)) < 1e-4
+        assert abs(x - (-35.0)) < 1e-4
 
 
 class TestRotationMatrix:
@@ -138,7 +138,7 @@ class TestRotationMatrix:
         bx, by, bz = driver.translate_coordinates(20.0, 5.0, 40.0)
 
         # With rotation, the result should differ from simple subtraction
-        simple_x = 20.0 - 15.0  # = 5.0
+        simple_x = 20.0 - 45.0  # = -25.0
         # Rotated result should NOT equal the simple subtraction
         # (unless the angle is exactly 0)
         assert not (abs(bx - simple_x) < 1e-4 and abs(bz - 40.0) < 1e-4)
@@ -158,3 +158,42 @@ class TestProcessMatrixFrame:
         assert len(result["base_xyz"]) == 3
         # Z should be the trough value
         assert abs(result["base_xyz"][2] - 25.5) < 1.0
+
+
+class TestToFBoundaryZoneFusion:
+    """Tests for Complementary Filter boundary zones at OFFSET=45.0mm."""
+
+    def test_tof_fusion_at_49mm_boundary(self):
+        """At 49mm (HALL_MAX_Z_MM), fusion should be 100% Hall."""
+        from brain_rpi5.src.core_loop import ComplementaryFilter
+        filt = ComplementaryFilter(steepness=0.5)
+        hall_w, tof_w = filt.compute_weights(49.0)
+        assert abs(hall_w - 1.0) < 1e-4
+        assert abs(tof_w - 0.0) < 1e-4
+        # Verify fuse with both inputs near 49mm so approx_z is in Hall zone
+        result = filt.fuse(hall_z_mm=48.0, tof_z_mm=50.0)
+        # approx_z = 49.0 → pure Hall → result ≈ 48.0
+        assert abs(result - 48.0) < 1e-4
+
+    def test_tof_fusion_at_55mm_midpoint(self):
+        """At 55mm (midpoint), fusion should be ~50/50 blend."""
+        from brain_rpi5.src.core_loop import ComplementaryFilter
+        filt = ComplementaryFilter(steepness=0.5)
+        hall_w, tof_w = filt.compute_weights(55.0)
+        assert abs(hall_w - 0.5) < 0.01
+        assert abs(tof_w - 0.5) < 0.01
+        # Verify fuse returns average-ish
+        result = filt.fuse(hall_z_mm=50.0, tof_z_mm=60.0)
+        assert 50.0 <= result <= 60.0
+
+    def test_tof_fusion_at_61mm_boundary(self):
+        """At 61mm (TOF_MIN_Z_MM), fusion should be 100% ToF."""
+        from brain_rpi5.src.core_loop import ComplementaryFilter
+        filt = ComplementaryFilter(steepness=0.5)
+        hall_w, tof_w = filt.compute_weights(61.0)
+        assert abs(hall_w - 0.0) < 1e-4
+        assert abs(tof_w - 1.0) < 1e-4
+        # Verify fuse with both inputs near 61mm so approx_z is in ToF zone
+        result = filt.fuse(hall_z_mm=60.0, tof_z_mm=62.0)
+        # approx_z = 61.0 → pure ToF → result ≈ 62.0
+        assert abs(result - 62.0) < 1e-4

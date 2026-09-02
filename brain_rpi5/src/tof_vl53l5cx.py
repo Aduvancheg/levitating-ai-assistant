@@ -6,7 +6,8 @@ trough), applies base-offset translation, and performs Gimbal Rotation
 Matrix compensation for macro-levitation.
 
 Conforms to:
-  - architecture.md §5 (Rotation Matrix for Gimbal, OFFSET_X_MM = 15.0)
+  - architecture.md §5 (Rotation Matrix for Gimbal, OFFSET_X_MM = 45.0)
+  - enclosure_architecture_v7.md (tof_on_diagonal=false, axial compact alignment)
   - quality.md §4 (boundary testing: 0 mm rejection)
   - backlog LS-6
 """
@@ -95,7 +96,8 @@ class ToFMatrixDriver:
       5. Apply Gimbal Rotation Matrix to get absolute Base coordinates.
     """
 
-    OFFSET_X_MM: float = 15.0
+    OFFSET_X_MM: float = 45.0
+    OFFSET_Y_MM: float = 0.0
 
     def __init__(self, sensor_dev: Optional[object] = None) -> None:
         self.sensor_dev = sensor_dev
@@ -184,8 +186,9 @@ class ToFMatrixDriver:
         produce systematic targeting errors.
         """
         # Step 1: Offset correction (sensor is shifted from coil center)
+        # enclosure_architecture_v7.md: ToF at X=+45.0mm, Y=0.0mm
         offset_x = float(raw_x_mm) - self.OFFSET_X_MM
-        offset_y = float(raw_y_mm)
+        offset_y = float(raw_y_mm) - self.OFFSET_Y_MM
         offset_z = float(raw_z_mm)
 
         # Step 2: Gimbal rotation compensation
