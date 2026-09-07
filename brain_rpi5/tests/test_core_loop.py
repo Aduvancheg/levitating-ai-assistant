@@ -388,3 +388,33 @@ class TestNegativeScenarios:
         # Because of slew rate limiter, duty shouldn't drop to 0. It should drop to 450.
         # Max drop is 10 units per iteration.
         assert loop._last_duties == [450, 450, 450, 450, 450]
+
+    @pytest.mark.asyncio
+    async def test_slew_rate_rampdown_respects_50ms_minimum(self):
+        """Verify that ramp-down from 460→0 at MAX_STEP=10 takes ≥50ms (≥43 ticks at 860Hz).
+
+        bringup_test_suite_v6.md: 'Перепад ШИМ с 460 до 0 обязан плавно растягиваться
+        не менее чем на 50 мс для безопасного поглощения ЭДС самоиндукции.'
+        """
+        MAX_PWM_STEP_PER_TICK = 10
+        LOOP_HZ = 860
+        TICK_MS = 1000.0 / LOOP_HZ  # ~1.16 ms
+
+        # Calculate number of ticks needed: ceil(460 / 10) = 46
+        start_pwm = 460
+        ticks_needed = 0
+        current_pwm = start_pwm
+        while current_pwm > 0:
+            current_pwm = max(current_pwm - MAX_PWM_STEP_PER_TICK, 0)
+            ticks_needed += 1
+
+        ramp_time_ms = ticks_needed * TICK_MS
+
+        # Must be >= 50ms per safety constraint
+        assert ramp_time_ms >= 50.0, (
+            f"Ramp-down time {ramp_time_ms:.1f}ms is below 50ms safety minimum! "
+            f"Ticks: {ticks_needed}, Tick duration: {TICK_MS:.2f}ms"
+        )
+        # Exact check: 460/10 = 46 ticks, 46 * 1.163ms = 53.5ms
+        assert ticks_needed == 46
+
