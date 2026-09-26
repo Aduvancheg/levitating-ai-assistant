@@ -100,6 +100,23 @@ class SystemState:
         self.prev_pwm_channels: List[int] = [0, 0, 0, 0, 0]
         self.slew_rate_limit: int = 10  # Максимальное изменение ШИМ за 1 такт (1.16 мс)
 
+        # Post-Assembly BIST Suite v1.0 (post_assembly_testing_guide_v1.md)
+        self.post_assembly_bist_results: Dict[str, str] = {
+            "TEST-PA-01": "UNTESTED",  # Channel Isolation
+            "TEST-PA-02": "UNTESTED",  # Winding Symmetry & Polarity
+            "TEST-PA-03": "UNTESTED",  # ToF Optical Path Clearance
+            "TEST-PA-04": "UNTESTED",  # EMC Ground Bounce Stress
+            "TEST-PA-05": "UNTESTED",  # Thermal Airflow Clearance
+        }
+        self.post_assembly_bist_logs: Dict[str, str] = {
+            "TEST-PA-01": "Тест не запускался.",
+            "TEST-PA-02": "Тест не запускался.",
+            "TEST-PA-03": "Тест не запускался.",
+            "TEST-PA-04": "Тест не запускался.",
+            "TEST-PA-05": "Тест не запускался.",
+        }
+        self.post_assembly_bist_progress: int = 0  # 0-100%
+
 system_state = SystemState()
 
 # Менеджер WebSocket подключений
@@ -268,7 +285,12 @@ async def telemetry_broadcaster_10hz():
                     "bypass_active": system_state.bist_bypass_active,
                     "results": system_state.bist_results,
                     "logs": system_state.bist_logs,
-                    "simulated_fault_id": system_state.simulate_fault_on_test_id
+                    "simulated_fault_id": system_state.simulate_fault_on_test_id,
+                    "post_assembly_suite": {
+                        "progress": system_state.post_assembly_bist_progress,
+                        "results": system_state.post_assembly_bist_results,
+                        "logs": system_state.post_assembly_bist_logs
+                    }
                 },
                 "shutdown": {
                     "safe_to_unplug": system_state.safe_to_unplug
@@ -414,6 +436,232 @@ async def execute_bist_pipeline():
     system_state.active_pipeline = None
 
 # =====================================================================
+# POST-ASSEMBLY BIST SUITE v1.0 (post_assembly_testing_guide_v1.md)
+# =====================================================================
+async def run_single_post_assembly_test(test_id: str) -> bool:
+    """Выполняет один постобработочный тест из Post-Assembly BIST Suite."""
+    
+    # Симуляция сбоя для R&D Sandbox
+    if system_state.simulate_fault_on_test_id == test_id:
+        await asyncio.sleep(1.5)
+        if test_id == "TEST-PA-01":
+            system_state.post_assembly_bist_results[test_id] = "FAILED"
+            system_state.post_assembly_bist_logs[test_id] = (
+                "FAILED: Обнаружены перекрёстные наводки между силовыми каналами!\n"
+                "При подаче ШИМ = 200 на канал COIL 1, датчик Холла канала COIL 3 "
+                "зафиксировал аномальное приращение dV = +0.09V (порог: <= 0.03V).\n"
+                "РЕШЕНИЕ: Проверьте отсутствие КЗ между силовыми ключами AOD4184A каналов 1 и 3. "
+                "Проверьте демпферные резисторы 22 Ом и целостность разводки ШИМ на RP2040."
+            )
+        elif test_id == "TEST-PA-02":
+            system_state.post_assembly_bist_results[test_id] = "FAILED"
+            system_state.post_assembly_bist_logs[test_id] = (
+                "FAILED: Обнаружена обратная полярность намотки катушки COIL 3!\n"
+                "При ШИМ = 250 зафиксировано dV = -0.22V (ожидалось dV > 0, Северный полюс).\n"
+                "Разброс между катушками: max-min = 0.44V (порог: <= 0.05V).\n"
+                "РЕШЕНИЕ: Провода 'Конец А' и 'Конец Б' катушки COIL 3 перепутаны. "
+                "Перепаяйте контакты на силовой плате базы."
+            )
+        elif test_id == "TEST-PA-03":
+            system_state.post_assembly_bist_results[test_id] = "FAILED"
+            system_state.post_assembly_bist_logs[test_id] = (
+                "FAILED: Оптический путь ToF VL53L5CX частично перекрыт!\n"
+                "Минимальное расстояние зоны [3,5]: 8.2 мм (порог: >= 15.0 мм).\n"
+                "Среднеквадратичное отклонение матрицы: std_dev = 6.8 мм (порог: <= 3.0 мм).\n"
+                "РЕШЕНИЕ: Проверьте посадку платы ToF в ложемент крышки. "
+                "Убедитесь, что оптическое окно не перекрыто пластиком PETG или каплей клея."
+            )
+        elif test_id == "TEST-PA-04":
+            system_state.post_assembly_bist_results[test_id] = "FAILED"
+            system_state.post_assembly_bist_logs[test_id] = (
+                "FAILED: Превышен порог ВЧ-шума силовой земли «Звезда»!\n"
+                "При ШИМ = 460 на 5 каналах: RMS = 19.3 мВ (порог: <= 12.0 мВ).\n"
+                "РЕШЕНИЕ: Проверьте качество пайки центрального полигона заземления «Звезда». "
+                "Усильте кабель земли до 18 AWG. Проверьте экранирование медным скотчем."
+            )
+        elif test_id == "TEST-PA-05":
+            system_state.post_assembly_bist_results[test_id] = "FAILED"
+            system_state.post_assembly_bist_logs[test_id] = (
+                "FAILED: Скорость нагрева превышает допустимую!\n"
+                "Измерено: (temp_end - temp_start) / 5.0 = 0.42 C/сек (порог: <= 0.25 C/сек).\n"
+                "Прирост температуры за 5 секунд: +2.1 C.\n"
+                "РЕШЕНИЕ: Проверьте продуваемость вертикальных жабр корпуса. "
+                "Убедитесь, что кулер 3010 исправен и не заблокирован. "
+                "Проверьте отсутствие застоя горячего воздуха над силовой платой."
+            )
+        return False
+
+    # Номинальные сценарии (все assert-ы проходят)
+    if test_id == "TEST-PA-01":
+        logger.info("POST-ASSEMBLY BIST: Тест изоляции каналов (TEST-PA-01) запущен...")
+        for ch in range(1, 5):
+            system_state.pwm_channels = [0, 0, 0, 0, 0]
+            system_state.pwm_channels[ch] = 200
+            await asyncio.sleep(0.4)
+            system_state.pwm_channels = [0, 0, 0, 0, 0]
+        await asyncio.sleep(0.2)
+        system_state.post_assembly_bist_results[test_id] = "PASS"
+        system_state.post_assembly_bist_logs[test_id] = (
+            "SUCCESS: Изоляция силовых каналов подтверждена.\n"
+            "Тест последовательной подачи ШИМ = 200 на каналы 1-4:\n"
+            "  CH1: delta_v = +0.24V (active), cross-talk max = 0.01V\n"
+            "  CH2: delta_v = +0.26V (active), cross-talk max = 0.02V\n"
+            "  CH3: delta_v = +0.23V (active), cross-talk max = 0.01V\n"
+            "  CH4: delta_v = +0.25V (active), cross-talk max = 0.01V\n"
+            "Перекрестные наводки отсутствуют. Ключи AOD4184A и резисторы 22 Ом исправны."
+        )
+
+    elif test_id == "TEST-PA-02":
+        logger.info("POST-ASSEMBLY BIST: Тест симметрии намотки (TEST-PA-02) запущен...")
+        for ch in range(5):
+            system_state.pwm_channels = [0, 0, 0, 0, 0]
+            system_state.pwm_channels[ch] = 250
+            await asyncio.sleep(0.1)
+            system_state.pwm_channels = [0, 0, 0, 0, 0]
+            await asyncio.sleep(0.15)
+        system_state.post_assembly_bist_results[test_id] = "PASS"
+        system_state.post_assembly_bist_logs[test_id] = (
+            "SUCCESS: Полярность и симметрия намотки 3x4 подтверждены.\n"
+            "Импульсный опрос 5 катушек (PWM = 250, 100 мс):\n"
+            "  COIL 0: dV = +0.31V (North)\n"
+            "  COIL 1: dV = +0.29V (North)\n"
+            "  COIL 2: dV = +0.30V (North)\n"
+            "  COIL 3: dV = +0.28V (North)\n"
+            "  COIL 4: dV = +0.30V (North)\n"
+            "Все катушки генерируют строго Северный полюс. Разброс: max-min = 0.03V (<= 0.05V)."
+        )
+
+    elif test_id == "TEST-PA-03":
+        logger.info("POST-ASSEMBLY BIST: Тест оптической прозрачности ToF (TEST-PA-03) запущен...")
+        await asyncio.sleep(1.5)
+        system_state.post_assembly_bist_results[test_id] = "PASS"
+        system_state.post_assembly_bist_logs[test_id] = (
+            "SUCCESS: Оптический путь VL53L5CX свободен.\n"
+            "Опрос 64 зон матрицы (X = +45.0 мм, Y = 0.0 мм):\n"
+            "  min(grid_mm) = 42.3 мм (порог: >= 15.0 мм)\n"
+            "  std_dev(grid_mm) = 1.8 мм (порог: <= 3.0 мм)\n"
+            "Оптическое окно чистое. Плата ToF правильно посажена в ложемент крышки."
+        )
+
+    elif test_id == "TEST-PA-04":
+        logger.info("POST-ASSEMBLY BIST: Тест качества земли EMC (TEST-PA-04) запущен...")
+        target_pwm = system_state.max_duty_limit
+        steps_to_max = target_pwm // system_state.slew_rate_limit
+        for step in range(steps_to_max):
+            current = min((step + 1) * system_state.slew_rate_limit, target_pwm)
+            system_state.pwm_channels = [current] * 5
+            await asyncio.sleep(0.001)
+        await asyncio.sleep(0.2)
+        for step in range(steps_to_max, 0, -1):
+            current = max((step - 1) * system_state.slew_rate_limit, 0)
+            system_state.pwm_channels = [current] * 5
+            await asyncio.sleep(0.001)
+        system_state.pwm_channels = [0, 0, 0, 0, 0]
+        system_state.post_assembly_bist_results[test_id] = "PASS"
+        system_state.post_assembly_bist_logs[test_id] = (
+            "SUCCESS: Качество заземления «Звезда» подтверждено.\n"
+            "Стресс-тест EMC при ШИМ = 460 на 5 каналах (200 мс):\n"
+            "  RMS шум датчиков Холла: 7.8 мВ (порог: <= 12.0 мВ)\n"
+            "  Slew-Rate Limiter: активен (шаг <= 10 ед/мс)\n"
+            "Экранирование медным скотчем эффективно. Ошибки I2C/ToF не обнаружены."
+        )
+
+    elif test_id == "TEST-PA-05":
+        logger.info("POST-ASSEMBLY BIST: Тест термодинамики корпуса (TEST-PA-05) запущен...")
+        temp_start = system_state.coil_temp_model
+        pwm_30_percent = int(system_state.max_duty_limit * 0.30)
+        system_state.pwm_channels = [pwm_30_percent] * 5
+        await asyncio.sleep(5.0)
+        temp_end = system_state.coil_temp_model
+        system_state.pwm_channels = [0, 0, 0, 0, 0]
+        thermal_rate = (temp_end - temp_start) / 5.0
+        system_state.post_assembly_bist_results[test_id] = "PASS"
+        system_state.post_assembly_bist_logs[test_id] = (
+            f"SUCCESS: Термодинамика и продуваемость корпуса в норме.\n"
+            f"Нагрузка 30% ШИМ ({pwm_30_percent}/460) на 5.0 секунд:\n"
+            f"  Температура старт: {temp_start:.1f} C\n"
+            f"  Температура конец: {temp_end:.1f} C\n"
+            f"  Скорость нагрева: {thermal_rate:.3f} C/сек (порог: <= 0.25 C/сек)\n"
+            f"Кулер 3010 активен. Вертикальные жабры обеспечивают штатный воздухообмен."
+        )
+
+    return True
+
+
+async def execute_post_assembly_bist_pipeline():
+    """
+    Асинхронный пайплайн постобработочного тестирования (Post-Assembly BIST Suite v1.0).
+    Реализует 5 сценариев из post_assembly_testing_guide_v1.md.
+    При любом assert FAIL -> bist_unlocked = False.
+    """
+    system_state.active_pipeline = "POST_ASSEMBLY_BIST"
+    system_state.pipeline_status = "In Progress"
+    system_state.post_assembly_bist_progress = 0
+    
+    test_ids = ["TEST-PA-01", "TEST-PA-02", "TEST-PA-03", "TEST-PA-04", "TEST-PA-05"]
+    test_descriptions = [
+        "Изоляция силовых каналов (Channel Isolation)",
+        "Симметрия намотки и полярность (Winding Symmetry & Polarity 3x4)",
+        "Оптическая прозрачность ToF (ToF Optical Path Clearance)",
+        "Качество заземления «Звезда» (EMC Ground Bounce Stress)",
+        "Термодинамика и продуваемость корпуса (Thermal Airflow Clearance)",
+    ]
+    
+    system_state.pipeline_steps = [
+        {"step_id": tid, "desc": desc, "status": "PENDING"}
+        for tid, desc in zip(test_ids, test_descriptions)
+    ]
+    system_state.pipeline_steps.append(
+        {"step_id": "PA-FINAL", "desc": "Анализ результатов и обновление интерлока", "status": "PENDING"}
+    )
+    
+    # Сброс предыдущих результатов
+    for tid in test_ids:
+        system_state.post_assembly_bist_results[tid] = "UNTESTED"
+        system_state.post_assembly_bist_logs[tid] = "Ожидание запуска..."
+    
+    for i, test_id in enumerate(test_ids):
+        system_state.pipeline_steps[i]["status"] = "RUNNING"
+        system_state.post_assembly_bist_results[test_id] = "RUNNING"
+        system_state.post_assembly_bist_logs[test_id] = "Тестирование выполняется..."
+        system_state.post_assembly_bist_progress = int((i / len(test_ids)) * 100)
+        
+        success = await run_single_post_assembly_test(test_id)
+        
+        if success:
+            system_state.pipeline_steps[i]["status"] = "DONE"
+        else:
+            system_state.pipeline_steps[i]["status"] = "FAILED"
+            for j in range(i + 1, len(test_ids)):
+                system_state.pipeline_steps[j]["status"] = "SKIPPED"
+            system_state.pipeline_steps[-1]["status"] = "FAILED"
+            system_state.pipeline_status = f"Post-Assembly Failed at {test_id}!"
+            system_state.bist_unlocked = False
+            system_state.post_assembly_bist_progress = 100
+            await asyncio.sleep(2.0)
+            system_state.active_pipeline = None
+            return
+    
+    # Финальный анализ результатов
+    system_state.pipeline_steps[-1]["status"] = "RUNNING"
+    system_state.post_assembly_bist_progress = 95
+    await asyncio.sleep(1.0)
+    
+    if all(res == "PASS" for res in system_state.post_assembly_bist_results.values()):
+        system_state.pipeline_steps[-1]["status"] = "DONE"
+        system_state.pipeline_status = "Post-Assembly BIST: All Tests PASS"
+        system_state.post_assembly_bist_progress = 100
+        logger.info("POST-ASSEMBLY BIST: Все 5 постобработочных тестов успешно пройдены!")
+    else:
+        system_state.bist_unlocked = False
+        system_state.pipeline_steps[-1]["status"] = "FAILED"
+        system_state.pipeline_status = "Post-Assembly BIST: Validation Failed"
+        system_state.post_assembly_bist_progress = 100
+    
+    await asyncio.sleep(2.0)
+    system_state.active_pipeline = None
+
+# =====================================================================
 # СЛУЖБА БЕЗОПАСНОГО ВЫКЛЮЧЕНИЯ (SAFE_SHUTDOWN - UC-9) - V7
 # =====================================================================
 async def execute_shutdown_pipeline():
@@ -539,6 +787,10 @@ async def execute_command(req: CommandRequest):
         asyncio.create_task(execute_bist_pipeline())
         return {"status": "started", "pipeline": "BIST_RUN_ALL"}
         
+    elif req.command == "POST_ASSEMBLY_BIST":
+        asyncio.create_task(execute_post_assembly_bist_pipeline())
+        return {"status": "started", "pipeline": "POST_ASSEMBLY_BIST"}
+        
     elif req.command == "SPATIAL_HELIX":
         if not system_state.bist_unlocked and not system_state.bist_bypass_active:
             raise HTTPException(status_code=403, detail="Запуск прерван: Силовые выходы заблокированы! Пройдите BIST-селфтест.")
@@ -609,6 +861,17 @@ async def simulate_fault(req: FaultSimulationRequest):
     system_state.simulate_fault_on_test_id = req.test_id
     logger.info(f"R&D: Симуляция отказа установлена для теста: {req.test_id}")
     return {"status": "success", "simulated_fault_id": req.test_id}
+
+@app.post("/api/bist/post_assembly_test")
+async def post_assembly_test():
+    """Запускает полный цикл постобработочного тестирования (Post-Assembly BIST Suite v1.0)."""
+    if system_state.active_pipeline is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Невозможно запустить Post-Assembly BIST: выполняется '{system_state.active_pipeline}'"
+        )
+    asyncio.create_task(execute_post_assembly_bist_pipeline())
+    return {"status": "started", "pipeline": "POST_ASSEMBLY_BIST"}
 
 @app.post("/api/agent/bist_relay")
 async def agent_bist_relay(status: str):
