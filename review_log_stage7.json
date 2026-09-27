@@ -1,0 +1,61 @@
+{
+    "stage": "Phase 4 - Calibration & Parking Workflow Integration (V10.0)",
+    "timestamp": "2026-09-26T23:40:00Z",
+    "reviewer": "Antigravity Assistant (Lead Firmware Architect)",
+    "checklists": {
+        "RPI-CL-11": {
+            "name": "Calibration FSM Safety",
+            "items": [
+                {
+                    "check": "Запрет любых маневров (JOYSTICK, HELIX) на шагах PARKED, ZEROING, TAKEOFF_HOVER, WAIT_REMOVAL.",
+                    "status": "PASS",
+                    "comment": "В `main_server.py` добавлена проверка `if req.command in [\"SPATIAL_HELIX\", \"JOYSTICK\"] and system_state.calib_state != CalibrationState.UNLOCKED_FLIGHT:`"
+                },
+                {
+                    "check": "Асинхронный таймаут безопасности 30.0 секунд при отсутствии клика оператора.",
+                    "status": "PASS",
+                    "comment": "Реализован метод `timeout_handler` с таймером на 30.0 секунд в `start_calibration`."
+                },
+                {
+                    "check": "Плавный спуск со скоростью <= 5.0 мм/с при отмене.",
+                    "status": "PASS",
+                    "comment": "При отмене и таймауте высота устанавливается на Z = 30.0 мм, плавность обеспечивается Slew-Rate лимитером `core_loop.py`."
+                }
+            ],
+            "result": "PASS"
+        },
+        "WEB-CL-9": {
+            "name": "Calibration Wizard Modal",
+            "items": [
+                {
+                    "check": "Четкое модальное окно с пошаговой инструкцией и анимацией раздвижения подставки.",
+                    "status": "PASS",
+                    "comment": "В `index.html` добавлено модальное окно `#calib-modal` и интегрировано в `updateTelemetryUI`."
+                },
+                {
+                    "check": "Кнопка 'CONFIRM STAND REMOVED' становится активной только после перехода FSM в WAIT_REMOVAL.",
+                    "status": "PASS",
+                    "comment": "Добавлено условие `btnConfirm.disabled = (data.calibration_fsm.state !== 'WAIT_REMOVAL')`."
+                }
+            ],
+            "result": "PASS"
+        },
+        "HW-CL-11": {
+            "name": "Split Cradle Mechanical Fit",
+            "items": [
+                {
+                    "check": "Зазор от внешнего края чашек катушек (R = 38.5 мм) до ножек подставки (R = 56.5 мм) равен не менее 18.0 мм.",
+                    "status": "PASS",
+                    "comment": "Обеспечен зазор, ножки на R=56.5 мм (`Base_Top_Lid_V8` и `calibration_stand_v1.scad`)."
+                },
+                {
+                    "check": "Глубина чаши 12.0 мм удерживает нижний торец сферы на высоте +18.0 мм над крышкой.",
+                    "status": "PASS",
+                    "comment": "В модели задан `cradle_depth = 12.0`, `stand_h = 30.0`. Сфера удерживается на 30 - 12 = 18 мм."
+                }
+            ],
+            "result": "PASS"
+        }
+    },
+    "verdict": "READY FOR STAGING"
+}
