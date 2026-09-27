@@ -11,7 +11,12 @@ Requires-Dist: simple-pid>=2.0.0
 Requires-Dist: pyserial>=3.5
 Requires-Dist: smbus2>=0.4.0
 Requires-Dist: numpy>=1.24.0
+Requires-Dist: google-generativeai>=0.8.0
+Requires-Dist: aiosqlite>=0.20.0
+Requires-Dist: sounddevice>=0.5.0
+Requires-Dist: webrtcvad>=2.0.10
 Provides-Extra: test
 Requires-Dist: pytest>=7.0.0; extra == "test"
 Requires-Dist: pytest-asyncio>=0.23.0; extra == "test"
 Requires-Dist: httpx>=0.25.0; extra == "test"
+Requires-Dist: aiosqlite>=0.20.0; extra == "test"

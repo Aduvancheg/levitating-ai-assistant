@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Antigravity Control Center - V11 AI Companion Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .neon-border { box-shadow: 0 0 15px rgba(59, 130, 246, 0.5); }
+        .neon-green { box-shadow: 0 0 15px rgba(34, 197, 94, 0.5); }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans p-6">
+    <div class="max-w-6xl mx-auto space-y-6">
+        
+        <!-- Header -->
+        <header class="flex justify-between items-center border-b border-slate-800 pb-4">
+            <div>
+                <h1 class="text-3xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
+                    ANTIGRAVITY CONTROL CENTER v11.0
+                </h1>
+                <p class="text-xs text-slate-400">Integrated Multimodal AI Companion & Harmonic Levitation Platform</p>
+            </div>
+            <div id="aiStatusBadge" class="px-4 py-2 rounded-full text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                AI: DISCONNECTED
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <div class="flex space-x-4 border-b border-slate-800 pb-2">
+            <button class="px-4 py-2 rounded-lg bg-blue-600 text-white font-medium text-sm">Dashboard</button>
+            <button class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-sm">Calibration Wizard</button>
+            <button class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm neon-green">AI Assistant (Gemini Pro)</button>
+        </div>
+
+        <!-- AI Assistant Tab Content -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            <!-- Left Panel: AI Configuration & Handshake -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+                <h2 class="text-lg font-bold text-emerald-400 flex items-center space-x-2">
+                    <span>🤖</span> <span>Gemini Pro Activation</span>
+                </h2>
+                
+                <div class="space-y-2">
+                    <label class="text-xs text-slate-400">Google Gemini API Key:</label>
+                    <input type="password" id="apiKeyInput" placeholder="AIzaSy..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500">
+                </div>
+
+                <button onclick="connectAI()" class="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-lg transition">
+                    CONNECT & SYNC API
+                </button>
+
+                <!-- Bring-Up 3-Step Panel -->
+                <div class="border-t border-slate-800 pt-4 space-y-3">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-xs font-bold text-slate-300">AI Hardware Bring-Up</h3>
+                        <button onclick="runAIBist()" class="text-xs text-emerald-400 hover:underline">Run Tests</button>
+                    </div>
+
+                    <div class="space-y-2 text-xs">
+                        <div class="flex justify-between bg-slate-950 p-2 rounded border border-slate-800">
+                            <span>1. Gemini API Sync</span>
+                            <span id="testAi1Status" class="text-slate-500">UNTESTED</span>
+                        </div>
+                        <div class="flex justify-between bg-slate-950 p-2 rounded border border-slate-800">
+                            <span>2. ESP32-CAM Stream</span>
+                            <span id="testAi2Status" class="text-slate-500">UNTESTED</span>
+                        </div>
+                        <div class="flex justify-between bg-slate-950 p-2 rounded border border-slate-800">
+                            <span>3. SPU-WM30 USB Audio</span>
+                            <span id="testAi3Status" class="text-slate-500">UNTESTED</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Center Panel: AI Chat & Multimodal Inspector -->
+            <div class="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col justify-between h-[500px]">
+                
+                <!-- Thoughts Header -->
+                <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs text-emerald-400 font-mono flex items-center space-x-2">
+                    <span class="animate-pulse">🧠</span>
+                    <span id="aiThoughtsLog">ИИ-ассистент готов к работе.</span>
+                </div>
+
+                <!-- Chat History Log -->
+                <div id="chatHistoryLog" class="flex-1 overflow-y-auto space-y-3 my-4 pr-2 text-sm font-sans">
+                    <div class="bg-slate-800/50 p-3 rounded-lg border border-slate-700 max-w-[80%]">
+                        <span class="text-xs font-bold text-emerald-400 block mb-1">Antigravity Agent</span>
+                        Привет! Я парию над базой. Чем я могу помочь сегодня? Спроси меня "Что на столе?" или заставь станцевать!
+                    </div>
+                </div>
+
+                <!-- Input Box -->
+                <div class="flex space-x-2">
+                    <input type="text" id="chatInput" placeholder="Напишите сообщение Агенту..." class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500" onkeydown="if(event.key==='Enter') sendChatMessage()">
+                    <button onclick="sendChatMessage()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-lg">
+                        Отправить
+                    </button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        async function connectAI() {
+            const key = document.getElementById('apiKeyInput').value;
+            const res = await fetch('/api/ai/connect', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({api_key: key})
+            });
+            const data = await res.json();
+            if (data.status === 'success') {
+                document.getElementById('aiStatusBadge').className = 'px-4 py-2 rounded-full text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-500 neon-green';
+                document.getElementById('aiStatusBadge').innerText = `AI: SYNCED (${data.latency_ms}ms)`;
+            }
+        }
+
+        async function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const msg = input.value;
+            if (!msg) return;
+
+            const chatLog = document.getElementById('chatHistoryLog');
+            chatLog.innerHTML += `<div class="bg-blue-950/40 p-3 rounded-lg border border-blue-800/50 ml-auto max-w-[80%]"><span class="text-xs font-bold text-blue-400 block mb-1">Вы</span>${msg}</div>`;
+            input.value = '';
+
+            const res = await fetch('/api/ai/chat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({message: msg})
+            });
+            const data = await res.json();
+            chatLog.innerHTML += `<div class="bg-slate-800/50 p-3 rounded-lg border border-slate-700 max-w-[80%]"><span class="text-xs font-bold text-emerald-400 block mb-1">Antigravity Agent</span>${data.reply}</div>`;
+            chatLog.scrollTop = chatLog.scrollHeight;
+        }
+
+        async function runAIBist() {
+            const res = await fetch('/api/ai/run_bist', {method: 'POST'});
+            const data = await res.json();
+            document.getElementById('testAi1Status').innerText = data.results['TEST-AI-01'];
+            document.getElementById('testAi1Status').className = 'text-emerald-400 font-bold';
+            document.getElementById('testAi2Status').innerText = data.results['TEST-AI-02'];
+            document.getElementById('testAi2Status').className = 'text-emerald-400 font-bold';
+            document.getElementById('testAi3Status').innerText = data.results['TEST-AI-03'];
+            document.getElementById('testAi3Status').className = 'text-emerald-400 font-bold';
+        }
+    </script>
+</body>
+</html>

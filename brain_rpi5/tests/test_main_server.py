@@ -20,7 +20,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from src.main_server import app, system_state, SystemState
+from src.main_server import app, system_state, SystemState, CalibrationState
 
 
 @pytest.fixture(autouse=True)
@@ -170,6 +170,7 @@ class TestExecuteCommand:
             # Reset pipeline state between attempts
             system_state.active_pipeline = None
             system_state.bist_unlocked = True  # Bypass interlock for test
+            system_state.calib_state = CalibrationState.UNLOCKED_FLIGHT  # Bypass calibration FSM
             response = client.post(
                 "/api/manage/execute",
                 json={"command": cmd},
