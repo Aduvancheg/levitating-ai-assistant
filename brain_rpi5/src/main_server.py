@@ -3,9 +3,17 @@ import time
 import json
 import logging
 import math
+from enum import Enum
 from typing import Dict, List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+class CalibrationState(str, Enum):
+    PARKED = "PARKED"
+    ZEROING = "ZEROING"
+    TAKEOFF_HOVER = "TAKEOFF_HOVER"
+    WAIT_REMOVAL = "WAIT_REMOVAL"
+    UNLOCKED_FLIGHT = "UNLOCKED_FLIGHT"
 from pydantic import BaseModel
 
 # Настройка логирования
@@ -105,6 +113,11 @@ class SystemState:
         # Геометрическое смещение ToF-датчика (enclosure_architecture_v7.md) - V9
         self.tof_offset_x_mm: float = 45.0  # Физический сдвиг ToF по оси X (мм)
         self.tof_offset_y_mm: float = 0.0   # Физический сдвиг ToF по оси Y (мм)
+
+        # Calibration FSM
+        self.calib_state: CalibrationState = CalibrationState.PARKED
+        self.calib_timer_task: Optional[asyncio.Task] = None
+        self.calib_log: str = "Агент установлен на калибровочный стенд."
 
 system_state = SystemState()
 
@@ -263,6 +276,11 @@ async def telemetry_broadcaster_10hz():
                     "kp": round(system_state.kp, 3),
                     "ki": round(system_state.ki, 3),
                     "kd": round(system_state.kd, 3)
+                },
+                "calibration_fsm": {
+                    "state": system_state.calib_state.value,
+                    "log": system_state.calib_log,
+                    "unlocked_flight": system_state.calib_state == CalibrationState.UNLOCKED_FLIGHT
                 },
                 "pipeline": {
                     "active_id": system_state.active_pipeline or "NONE",
@@ -654,6 +672,8 @@ async def execute_command(req: CommandRequest):
     elif req.command in _PIPELINE_MAP:
         if not system_state.bist_unlocked and not system_state.bist_bypass_active and req.command in ["SPATIAL_HELIX", "SMOOTH_TAKEOFF"]:
             raise HTTPException(status_code=403, detail="Запуск прерван: Силовые выходы заблокированы! Пройдите BIST-селфтест.")
+        if req.command in ["SPATIAL_HELIX", "JOYSTICK"] and system_state.calib_state != CalibrationState.UNLOCKED_FLIGHT:
+            raise HTTPException(status_code=403, detail="Запуск прерван: Калибровка на стенде не завершена. Подставка не удалена.")
             
         system_state.active_pipeline = req.command
         system_state.pipeline_status = "Running"
@@ -761,6 +781,63 @@ async def websocket_endpoint(websocket: WebSocket):
                 pass
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@app.post("/api/calibration/start")
+async def start_calibration():
+    if system_state.calib_state != CalibrationState.PARKED:
+        raise HTTPException(status_code=400, detail="Калибровка уже запущена или завершена.")
+        
+    system_state.calib_state = CalibrationState.ZEROING
+    system_state.calib_log = "ШАГ 1/5: Снятие нулей датчиков Холла и ToF на высоте Z = 30.0мм..."
+    
+    # Снятие нулей и проверка шума (симуляция)
+    rms_noise = 1.2  # mV
+    if rms_noise >= 2.0:
+        system_state.calib_state = CalibrationState.PARKED
+        raise HTTPException(status_code=500, detail=f"Calibration Failed: Sensor RMS noise {rms_noise}mV >= 2.0mV")
+        
+    await asyncio.sleep(1.0)
+    
+    system_state.calib_state = CalibrationState.TAKEOFF_HOVER
+    system_state.calib_log = "ШАГ 2/5: Плавный приподъем сферы на +3.0мм (Z = 33.0мм)..."
+    system_state.target_z = 33.0
+    await asyncio.sleep(1.5)
+    
+    system_state.calib_state = CalibrationState.WAIT_REMOVAL
+    system_state.calib_log = "ШАГ 3/5: Сфера зависла! Раздвиньте половинки подставки и нажмите CONFIRM."
+    
+    async def timeout_handler():
+        await asyncio.sleep(30.0)
+        if system_state.calib_state == CalibrationState.WAIT_REMOVAL:
+            logger.warning("Calibration timeout! Auto-landing sphere...")
+            system_state.calib_state = CalibrationState.PARKED
+            system_state.target_z = 30.0
+            system_state.calib_log = "ТАЙМАУТ (30с)! Сфера безопасно опустилась обратно в чашу."
+            
+    system_state.calib_timer_task = asyncio.create_task(timeout_handler())
+    return {"status": "success", "state": system_state.calib_state.value}
+
+@app.post("/api/calibration/confirm_stand_removed")
+async def confirm_stand_removed():
+    if system_state.calib_state != CalibrationState.WAIT_REMOVAL:
+        raise HTTPException(status_code=400, detail="Ожидание удаления подставки не активно.")
+        
+    if system_state.calib_timer_task:
+        system_state.calib_timer_task.cancel()
+        
+    system_state.calib_state = CalibrationState.UNLOCKED_FLIGHT
+    system_state.target_z = 25.0
+    system_state.calib_log = "ШАГ 5/5: Подставка удалена! Переход на рабочую высоту 25.0мм. Полетные режимы разблокированы!"
+    return {"status": "success", "state": system_state.calib_state.value}
+
+@app.post("/api/calibration/cancel")
+async def cancel_calibration():
+    if system_state.calib_timer_task:
+        system_state.calib_timer_task.cancel()
+    system_state.calib_state = CalibrationState.PARKED
+    system_state.target_z = 30.0
+    system_state.calib_log = "Калибровка отменена. Сфера вернулась на подставку."
+    return {"status": "cancelled", "state": system_state.calib_state.value}
 
 if __name__ == "__main__":
     import uvicorn

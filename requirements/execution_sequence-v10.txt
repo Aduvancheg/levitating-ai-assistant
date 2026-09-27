@@ -1,0 +1,22 @@
+=====================================================================
+ANTIGRAVITY EXECUTION SEQUENCE V10.0 // CALIBRATION & PARKING INTEGRATION
+=====================================================================
+
+1. [HARDWARE/CAD] Print Calibration Stand:
+   - Compile and export `calibration_stand_v1.scad` -> STL.
+   - Print Left and Right halves on Bambu Lab A1 (PETG, 0.2mm layer).
+   
+2. [HARDWARE/CAD] Print Base Lid V8:
+   - Compile `enclosure_architecture_v8.md` (`Base_Top_Lid_V8`) -> STL.
+   - Print with outer L-locking slots at R = 56.5mm.
+
+3. [SOFTWARE/BACKEND] Deploy Main Server V10:
+   - Run `main_server-v10.py` on Raspberry Pi 5.
+   - Verify FSM states via `POST /api/calibration/start`.
+
+4. [SOFTWARE/FRONTEND] Deploy Web UI V10:
+   - Update `index.html` with `index_html_template-v10.txt`.
+   - Test Calibration Wizard modal dialog in browser.
+
+5. [TESTING] Execute Pytest Suite:
+   - Run `pytest test_calibration_fsm.py` to confirm safety timeouts and lockouts.
