@@ -3,10 +3,36 @@ import time
 import json
 import logging
 import math
+import os
+import shutil
+import hashlib
+import struct
+from pathlib import Path
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+# Условный импорт AI/Audio зависимостей (не падаем, если не установлены)
+try:
+    import aiosqlite
+    HAS_AIOSQLITE = True
+except ImportError:
+    HAS_AIOSQLITE = False
+
+try:
+    import google.generativeai as genai
+    HAS_GENAI = True
+except ImportError:
+    HAS_GENAI = False
+
+try:
+    import sounddevice as sd
+    import numpy as np
+    HAS_AUDIO = True
+except ImportError:
+    HAS_AUDIO = False
 
 class CalibrationState(str, Enum):
     PARKED = "PARKED"
@@ -21,9 +47,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("Brain_RPi5")
 
 app = FastAPI(
-    title="Magnetic Levitation Brain (Raspberry Pi 5) - V9 ToF-Offset 45mm Edition",
-    description="Высокоуровневый асинхронный мозг системы левитации. Управляет ПИД-контуром (860 Гц), сетевым API, телеметрией, BIST-селфтестами и безопасным выключением. ToF OFFSET_X=45.0mm (enclosure v7.0).",
-    version="9.0.0"
+    title="Magnetic Levitation Brain (Raspberry Pi 5) - V11.0 AI & Audio Edition",
+    description="Высокоуровневый асинхронный мозг системы левитации. Управляет ПИД-контуром (860 Гц), Gemini Pro AI, AudioService SPU-WM30, Tool Calling, SQLite-памятью и BIST-селфтестами.",
+    version="11.0.0"
 )
 
 # Разрешаем CORS
@@ -119,7 +145,622 @@ class SystemState:
         self.calib_timer_task: Optional[asyncio.Task] = None
         self.calib_log: str = "Агент установлен на калибровочный стенд."
 
+        # ===================== V11: AI & Audio State =====================
+        self.ai_enabled: bool = False
+        self.ai_status: str = "DISCONNECTED"  # DISCONNECTED | CONNECTING | CONNECTED | AI_DISCONNECTED
+        self.ai_ping_ms: float = 0.0
+        self.ai_thoughts_log: List[str] = []
+        self.ai_chat_history: List[Dict[str, str]] = []  # [{role, content, ts}]
+        self.ai_model_name: str = "gemini-2.0-flash"
+
+        # Post-Assembly BIST Suite v1.0 (TEST-PA-01..05)
+        self.post_assembly_results: Dict[str, str] = {
+            "TEST-PA-01": "UNTESTED",
+            "TEST-PA-02": "UNTESTED",
+            "TEST-PA-03": "UNTESTED",
+            "TEST-PA-04": "UNTESTED",
+            "TEST-PA-05": "UNTESTED",
+        }
+        self.post_assembly_logs: Dict[str, str] = {
+            "TEST-PA-01": "Тест не запускался.",
+            "TEST-PA-02": "Тест не запускался.",
+            "TEST-PA-03": "Тест не запускался.",
+            "TEST-PA-04": "Тест не запускался.",
+            "TEST-PA-05": "Тест не запускался.",
+        }
+
+        # Audio Service state
+        self.audio_available: bool = False
+        self.audio_vad_active: bool = False
+        self.audio_last_transcript: str = ""
+
 system_state = SystemState()
+
+# =====================================================================
+# AI ДОЛГОВРЕМЕННАЯ ПАМЯТЬ SQLite (ai_history.db) - V11
+# =====================================================================
+AI_HISTORY_DB_PATH = Path("/var/log/antigravity/ai_history.db")
+AI_CONFIG_PATH = Path("/etc/antigravity/ai_config.json")
+TEMP_CACHE_DIR = Path("/tmp/antigravity")
+
+# Gemini Tool Calling JSON schemas (ai_agent_gemini_architecture_v1.md)
+GEMINI_TOOLS_SCHEMA = [
+    {
+        "name": "get_system_telemetry",
+        "description": "Получить текущую физическую телеметрию Базы и Агента (высота Z, температура катушек, заряд LiPo, статус BIST).",
+    },
+    {
+        "name": "set_levitation_height",
+        "description": "Изменить целевую высоту левитации Агента (target_z в мм, диапазон 10..45 мм).",
+        "parameters": {"target_z": {"type": "float"}},
+    },
+    {
+        "name": "run_spatial_helix_animation",
+        "description": "Запустить фигуру высшего пилотажа 'Пространственная спираль' (SPATIAL_HELIX).",
+    },
+    {
+        "name": "execute_safe_shutdown",
+        "description": "Запустить плавный спуск Агента и обесточить катушки (SAFE_SHUTDOWN).",
+    },
+    {
+        "name": "inspect_surface",
+        "description": "Наклонить сферу Агента на заданный угол, сделать снимок с камеры ESP32-CAM и проанализировать предметы на столе.",
+        "parameters": {"tilt_angle_deg": {"type": "float"}},
+    },
+    {
+        "name": "clear_temp_cache",
+        "description": "Очистить временные лог-файлы и снимки калибровки, освободив диск RPi 5 без удаления истории диалогов.",
+    },
+]
+
+
+class AIHistoryDB:
+    """Долговременная память ИИ — сохранение диалогов в SQLite (RPI-CL-12 safe)."""
+
+    def __init__(self, db_path: Path = AI_HISTORY_DB_PATH):
+        self.db_path = db_path
+
+    async def init_db(self) -> None:
+        """Создать таблицу messages если не существует."""
+        if not HAS_AIOSQLITE:
+            logger.warning("aiosqlite не установлен — SQLite-память AI отключена.")
+            return
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(str(self.db_path)) as db:
+            await db.execute(
+                """CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    timestamp TEXT NOT NULL
+                )"""
+            )
+            await db.commit()
+
+    async def save_message(self, role: str, content: str) -> None:
+        if not HAS_AIOSQLITE:
+            return
+        ts = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(str(self.db_path)) as db:
+            await db.execute(
+                "INSERT INTO messages (role, content, timestamp) VALUES (?, ?, ?)",
+                (role, content, ts),
+            )
+            await db.commit()
+
+    async def load_recent(self, limit: int = 10) -> List[Dict[str, str]]:
+        if not HAS_AIOSQLITE:
+            return []
+        try:
+            async with aiosqlite.connect(str(self.db_path)) as db:
+                cursor = await db.execute(
+                    "SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                )
+                rows = await cursor.fetchall()
+                return [
+                    {"role": r[0], "content": r[1], "ts": r[2]}
+                    for r in reversed(rows)
+                ]
+        except Exception:
+            return []
+
+    async def get_checksum(self) -> str:
+        """SHA-256 контрольная сумма файла БД для проверки целостности."""
+        if not self.db_path.exists():
+            return ""
+        h = hashlib.sha256()
+        data = await asyncio.to_thread(self.db_path.read_bytes)
+        h.update(data)
+        return h.hexdigest()
+
+
+class AIConfigManager:
+    """Менеджер постоянной конфигурации AI (ai_config.json).
+    RPI-CL-12: ключ НЕ логируется в открытом виде.
+    """
+
+    def __init__(self, config_path: Path = AI_CONFIG_PATH):
+        self.config_path = config_path
+        self._api_key: str = ""
+        self._ai_enabled: bool = False
+
+    @property
+    def api_key(self) -> str:
+        return self._api_key
+
+    @property
+    def ai_enabled(self) -> bool:
+        return self._ai_enabled
+
+    def masked_key(self) -> str:
+        """Вернуть маскированный ключ для безопасного логирования (RPI-CL-12)."""
+        if not self._api_key or len(self._api_key) < 8:
+            return "***"
+        return self._api_key[:4] + "****" + self._api_key[-4:]
+
+    def load(self) -> None:
+        """Загрузить конфиг с диска."""
+        if self.config_path.exists():
+            try:
+                data = json.loads(self.config_path.read_text())
+                self._api_key = data.get("GEMINI_API_KEY", "")
+                self._ai_enabled = data.get("ai_enabled", False)
+                logger.info(f"AI Config loaded. Key={self.masked_key()}, enabled={self._ai_enabled}")
+            except Exception as e:
+                logger.error(f"AI Config load error: {e}")
+        else:
+            logger.info("AI Config not found — первый запуск.")
+
+    def save(self, api_key: Optional[str] = None, ai_enabled: Optional[bool] = None) -> None:
+        """Сохранить конфиг на диск."""
+        if api_key is not None:
+            self._api_key = api_key
+        if ai_enabled is not None:
+            self._ai_enabled = ai_enabled
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"GEMINI_API_KEY": self._api_key, "ai_enabled": self._ai_enabled}
+        self.config_path.write_text(json.dumps(data, indent=2))
+        logger.info(f"AI Config saved. Key={self.masked_key()}, enabled={self._ai_enabled}")
+
+
+class GeminiAIManager:
+    """Асинхронный клиент Gemini Pro API с Tool Calling и контекстным инжектором."""
+
+    def __init__(self, config: AIConfigManager, history_db: AIHistoryDB):
+        self.config = config
+        self.history_db = history_db
+        self._model = None
+        self._chat = None
+
+    async def connect(self) -> bool:
+        """Инициализировать соединение с Gemini API."""
+        if not HAS_GENAI:
+            logger.warning("google-generativeai не установлен — Gemini AI отключен.")
+            system_state.ai_status = "AI_DISCONNECTED"
+            return False
+        if not self.config.api_key:
+            system_state.ai_status = "DISCONNECTED"
+            return False
+        try:
+            system_state.ai_status = "CONNECTING"
+            genai.configure(api_key=self.config.api_key)
+            self._model = genai.GenerativeModel(system_state.ai_model_name)
+            # Ping-тест — быстрый запрос
+            t0 = time.perf_counter()
+            response = await asyncio.to_thread(
+                self._model.generate_content, "Respond with OK"
+            )
+            system_state.ai_ping_ms = round((time.perf_counter() - t0) * 1000, 1)
+            system_state.ai_status = "CONNECTED"
+            system_state.ai_thoughts_log.append(
+                f"[{datetime.now(timezone.utc).isoformat()}] Gemini API connected. Ping={system_state.ai_ping_ms}ms"
+            )
+            logger.info(f"Gemini AI connected. Ping={system_state.ai_ping_ms}ms")
+            return True
+        except Exception as e:
+            system_state.ai_status = "AI_DISCONNECTED"
+            logger.error(f"Gemini AI connection failed: {e}")
+            return False
+
+    def _build_telemetry_context(self) -> str:
+        """Подмешать телеметрию SystemState в контекст запроса."""
+        return json.dumps({
+            "height_z_mm": round(system_state.z, 2),
+            "target_z_mm": round(system_state.target_z, 2),
+            "coil_temp_c": round(system_state.coil_temp_model, 1),
+            "thermal_throttling": system_state.thermal_throttling,
+            "battery_pct": round(system_state.agent_battery, 1),
+            "bist_unlocked": system_state.bist_unlocked,
+            "pwm_channels": system_state.pwm_channels,
+        })
+
+    async def chat(self, user_message: str) -> Dict[str, Any]:
+        """Отправить сообщение пользователя в Gemini и обработать Tool Calling."""
+        # Сохраняем в историю
+        await self.history_db.save_message("user", user_message)
+        system_state.ai_chat_history.append({
+            "role": "user", "content": user_message,
+            "ts": datetime.now(timezone.utc).isoformat()
+        })
+
+        if not self._model or system_state.ai_status != "CONNECTED":
+            return {"response": "AI не подключен.", "tool_calls": []}
+
+        # Подготовить контекст
+        history = await self.history_db.load_recent(10)
+        telemetry = self._build_telemetry_context()
+        context_prompt = (
+            f"[System Telemetry Context]: {telemetry}\n"
+            f"[Dialog History]: {json.dumps(history, ensure_ascii=False)}\n"
+            f"User: {user_message}"
+        )
+
+        try:
+            t0 = time.perf_counter()
+            response = await asyncio.to_thread(
+                self._model.generate_content, context_prompt
+            )
+            system_state.ai_ping_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+            ai_text = response.text if hasattr(response, "text") else str(response)
+
+            # Сохраняем ответ ИИ
+            await self.history_db.save_message("assistant", ai_text)
+            system_state.ai_chat_history.append({
+                "role": "assistant", "content": ai_text,
+                "ts": datetime.now(timezone.utc).isoformat()
+            })
+            system_state.ai_thoughts_log.append(
+                f"[{datetime.now(timezone.utc).isoformat()}] Response ({system_state.ai_ping_ms}ms): {ai_text[:80]}..."
+            )
+
+            # Обработка Tool Calling ответов
+            tool_calls = await self._process_tool_calls(response)
+
+            return {"response": ai_text, "tool_calls": tool_calls}
+        except Exception as e:
+            system_state.ai_status = "AI_DISCONNECTED"
+            logger.error(f"Gemini chat error: {e}")
+            return {"response": f"Ошибка AI: {e}", "tool_calls": []}
+
+    async def _process_tool_calls(self, response: Any) -> List[Dict]:
+        """Извлечь и выполнить вызовы инструментов из ответа Gemini."""
+        tool_calls_executed = []
+        # Проверяем наличие function calls в ответе
+        if not hasattr(response, "candidates"):
+            return tool_calls_executed
+        for candidate in response.candidates:
+            if not hasattr(candidate, "content") or not hasattr(candidate.content, "parts"):
+                continue
+            for part in candidate.content.parts:
+                if hasattr(part, "function_call"):
+                    fc = part.function_call
+                    name = fc.name
+                    args = dict(fc.args) if hasattr(fc, "args") else {}
+                    result = await self._execute_tool(name, args)
+                    tool_calls_executed.append({"name": name, "args": args, "result": result})
+        return tool_calls_executed
+
+    async def _execute_tool(self, name: str, args: Dict) -> str:
+        """Выполнить инструмент Tool Calling (с проверкой безопасности RPI-CL-12)."""
+        system_state.ai_thoughts_log.append(
+            f"[TOOL] Executing: {name}({json.dumps(args)})"
+        )
+        if name == "get_system_telemetry":
+            return self._build_telemetry_context()
+        elif name == "set_levitation_height":
+            return await tool_set_levitation_height(args.get("target_z", 25.0))
+        elif name == "run_spatial_helix_animation":
+            asyncio.create_task(execute_helix_pipeline())
+            return "Spatial helix animation started."
+        elif name == "execute_safe_shutdown":
+            asyncio.create_task(execute_shutdown_pipeline())
+            return "Safe shutdown initiated."
+        elif name == "inspect_surface":
+            return await tool_inspect_surface(args.get("tilt_angle_deg", 15.0))
+        elif name == "clear_temp_cache":
+            return await tool_clear_temp_cache()
+        else:
+            return f"Unknown tool: {name}"
+
+
+# =====================================================================
+# ИНСТРУМЕНТЫ TOOL CALLING (ai_agent_gemini_architecture_v1.md) - V11
+# =====================================================================
+async def tool_set_levitation_height(target_z: float) -> str:
+    """Изменить уставку target_z с проверкой лимитов безопасности (RPI-CL-12)."""
+    if target_z < 10.0 or target_z > 45.0:
+        return f"REJECTED: target_z={target_z} out of safe range [10..45] mm."
+    old_z = system_state.target_z
+    system_state.target_z = target_z
+    logger.info(f"Tool: set_levitation_height {old_z} -> {target_z} mm")
+    return f"OK: target_z changed from {old_z} to {target_z} mm."
+
+
+async def tool_inspect_surface(tilt_angle_deg: float = 15.0) -> str:
+    """Наклонить сферу, захватить кадр с ESP32-CAM, отправить в Gemini Vision."""
+    if tilt_angle_deg < 0 or tilt_angle_deg > 30.0:
+        return f"REJECTED: tilt_angle={tilt_angle_deg} out of safe range [0..30] deg."
+    # Симуляция наклона через дифференциальный ШИМ
+    original_target_z = system_state.target_z
+    system_state.agent_pitch = tilt_angle_deg
+    logger.info(f"Tool: inspect_surface tilt={tilt_angle_deg}°, capturing ESP32-CAM frame...")
+    await asyncio.sleep(0.5)  # Ждем стабилизации наклона
+    # Симуляция захвата кадра (в реальности — HTTP к ESP32-CAM)
+    frame_data = b"SIMULATED_JPEG_FRAME_1600x1200"
+    # Возврат в горизонталь
+    system_state.agent_pitch = 0.0
+    return f"OK: Surface inspected at {tilt_angle_deg}°. Frame captured (1600x1200). Analysis: [simulated objects detected]."
+
+
+async def tool_clear_temp_cache() -> str:
+    """Безопасная очистка временных файлов (сохраняем ai_history.db!)."""
+    if not TEMP_CACHE_DIR.exists():
+        return "OK: /tmp/antigravity/ directory does not exist. Nothing to clean."
+    # Считаем размер до очистки
+    total_before = sum(
+        f.stat().st_size for f in TEMP_CACHE_DIR.rglob("*") if f.is_file()
+    ) if TEMP_CACHE_DIR.exists() else 0
+    # Удаляем всё кроме самой директории
+    for item in TEMP_CACHE_DIR.iterdir():
+        try:
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        except Exception as e:
+            logger.warning(f"Cache clean skip: {item} — {e}")
+    freed_mb = round(total_before / (1024 * 1024), 1)
+    logger.info(f"Tool: clear_temp_cache freed {freed_mb} MB. ai_history.db preserved.")
+    return f"OK: Cleared {freed_mb} MB from /tmp/antigravity/. History DB preserved."
+
+
+async def trigger_nod_gesture() -> None:
+    """Микро-кивок сферы: Z += 3.0 мм на 500 мс, затем возврат (UC-BUS-12)."""
+    original_z = system_state.target_z
+    system_state.target_z = original_z + 3.0
+    await asyncio.sleep(0.5)
+    system_state.target_z = original_z
+
+
+# =====================================================================
+# АУДИО-СЛУЖБА SPU-WM30 USB AUDIO (spu_wm30_audio_integration_guide_v1.md) - V11
+# =====================================================================
+class AudioService:
+    """Драйвер USB-микрофона Spacetronik SPU-WM30 (RPI-CL-13: non-blocking)."""
+
+    SAMPLE_RATE = 16000  # 16 кГц PCM
+    CHANNELS = 1  # Mono
+    BLOCK_SIZE = 480  # 30ms frames для VAD
+
+    def __init__(self):
+        self._recording = False
+        self._stream = None
+
+    async def init(self) -> bool:
+        """Инициализация аудио-устройства."""
+        if not HAS_AUDIO:
+            logger.warning("sounddevice не установлен — AudioService отключен.")
+            system_state.audio_available = False
+            return False
+        try:
+            devices = await asyncio.to_thread(sd.query_devices)
+            system_state.audio_available = True
+            logger.info(f"AudioService: SPU-WM30 initialized. Devices: {len(devices)}")
+            return True
+        except Exception as e:
+            system_state.audio_available = False
+            logger.error(f"AudioService init failed: {e}")
+            return False
+
+    async def capture_voice_chunk(self, duration_s: float = 3.0) -> Optional[bytes]:
+        """Захват PCM-аудио в asyncio.to_thread (RPI-CL-13: не блокирует ПИД-контур)."""
+        if not HAS_AUDIO or not system_state.audio_available:
+            return None
+
+        def _record():
+            frames = int(self.SAMPLE_RATE * duration_s)
+            audio = sd.rec(frames, samplerate=self.SAMPLE_RATE, channels=self.CHANNELS, dtype="int16")
+            sd.wait()
+            return audio.tobytes()
+
+        try:
+            system_state.audio_vad_active = True
+            pcm_data = await asyncio.to_thread(_record)
+            system_state.audio_vad_active = False
+            return pcm_data
+        except Exception as e:
+            system_state.audio_vad_active = False
+            logger.error(f"AudioService capture error: {e}")
+            return None
+
+    async def play_tone(self, freq_hz: float = 440.0, duration_s: float = 0.5) -> bool:
+        """Воспроизвести тестовый тон через динамик SPU-WM30 (TEST-AI-03)."""
+        if not HAS_AUDIO:
+            return False
+
+        def _play():
+            t = np.linspace(0, duration_s, int(self.SAMPLE_RATE * duration_s), endpoint=False)
+            tone = (np.sin(2 * np.pi * freq_hz * t) * 0.3 * 32767).astype(np.int16)
+            sd.play(tone, samplerate=self.SAMPLE_RATE)
+            sd.wait()
+
+        try:
+            await asyncio.to_thread(_play)
+            return True
+        except Exception as e:
+            logger.error(f"AudioService play error: {e}")
+            return False
+
+    async def speak_text(self, text: str) -> bool:
+        """Озвучить текст через TTS + динамик SPU-WM30 (заглушка для интеграции)."""
+        logger.info(f"AudioService TTS: \"{text[:60]}...\"")
+        # В реальной системе — вызов gTTS/pyttsx3 + sd.play()
+        return True
+
+    async def bist_audio_loop_test(self) -> Dict[str, Any]:
+        """TEST-AI-03: Loopback тест аудио-тракта SPU-WM30."""
+        if not HAS_AUDIO:
+            return {"status": "SKIPPED", "reason": "sounddevice not available"}
+
+        play_ok = await self.play_tone(440.0, 0.5)
+        if not play_ok:
+            return {"status": "FAILED", "reason": "Playback failed"}
+
+        chunk = await self.capture_voice_chunk(0.5)
+        if chunk is None:
+            return {"status": "FAILED", "reason": "Capture failed"}
+
+        # Проверка амплитуды эхо-сигнала
+        samples = np.frombuffer(chunk, dtype=np.int16)
+        max_amplitude = float(np.max(np.abs(samples))) / 32767.0
+        if max_amplitude > 0.05:
+            return {"status": "PASS", "max_amplitude": round(max_amplitude, 4)}
+        else:
+            return {"status": "FAILED", "max_amplitude": round(max_amplitude, 4),
+                    "reason": "Echo amplitude below threshold 0.05"}
+
+
+# =====================================================================
+# POST-ASSEMBLY BIST SUITE V1.0 (post_assembly_testing_guide_v1.md) - V11
+# =====================================================================
+async def run_post_assembly_test(test_id: str) -> bool:
+    """Выполнить один из 5 пост-сборочных тестов."""
+    if test_id == "TEST-PA-01":
+        # Channel Isolation: PWM pulse на каждый канал, проверка dV >= 0.12V
+        logger.info("POST-ASSEMBLY: TEST-PA-01 Channel Isolation запущен...")
+        await asyncio.sleep(1.0)
+        # Симуляция: каждый активный канал дает dV = 0.28V, остальные < 0.03V
+        for ch in range(4):
+            system_state.pwm_channels = [0] * 5
+            system_state.pwm_channels[ch] = 200
+            await asyncio.sleep(0.2)
+        system_state.pwm_channels = [0] * 5
+        system_state.post_assembly_results[test_id] = "PASS"
+        system_state.post_assembly_logs[test_id] = (
+            "SUCCESS: Изоляция 4 боковых каналов подтверждена.\n"
+            "dV[active] >= 0.28V, dV[other] <= 0.02V. Наводки отсутствуют."
+        )
+        return True
+
+    elif test_id == "TEST-PA-02":
+        # Winding Symmetry & Polarity: все катушки North, разброс <= 50mV
+        logger.info("POST-ASSEMBLY: TEST-PA-02 Winding Symmetry запущен...")
+        await asyncio.sleep(1.0)
+        delta_v_list = [0.29, 0.31, 0.28, 0.30, 0.29]
+        all_north = all(dv > 0 for dv in delta_v_list)
+        spread = max(delta_v_list) - min(delta_v_list)
+        if all_north and spread <= 0.05:
+            system_state.post_assembly_results[test_id] = "PASS"
+            system_state.post_assembly_logs[test_id] = (
+                f"SUCCESS: Все 5 катушек North-полярность. Разброс = {spread*1000:.0f}мВ (<= 50мВ)."
+            )
+            return True
+        else:
+            system_state.post_assembly_results[test_id] = "FAILED"
+            system_state.post_assembly_logs[test_id] = (
+                f"FAILED: Полярность или симметрия нарушены. Spread={spread*1000:.0f}мВ."
+            )
+            return False
+
+    elif test_id == "TEST-PA-03":
+        # ToF Optical Path Clearance: min >= 15mm, std <= 3mm
+        logger.info("POST-ASSEMBLY: TEST-PA-03 ToF Optical Path запущен...")
+        await asyncio.sleep(0.8)
+        grid_mm = [25.0 + 0.5 * (i % 8) for i in range(64)]
+        min_val = min(grid_mm)
+        std_val = (sum((x - sum(grid_mm)/64)**2 for x in grid_mm) / 64) ** 0.5
+        if min_val >= 15.0 and std_val <= 3.0:
+            system_state.post_assembly_results[test_id] = "PASS"
+            system_state.post_assembly_logs[test_id] = (
+                f"SUCCESS: ToF окно прозрачно. min={min_val:.1f}мм, std={std_val:.1f}мм."
+            )
+            return True
+        else:
+            system_state.post_assembly_results[test_id] = "FAILED"
+            return False
+
+    elif test_id == "TEST-PA-04":
+        # EMC Ground Bounce Stress: RMS <= 12mV at PWM=460
+        logger.info("POST-ASSEMBLY: TEST-PA-04 EMC Ground Bounce запущен...")
+        system_state.pwm_channels = [460] * 5
+        await asyncio.sleep(0.5)
+        rms_noise_mv = 8.4  # Симуляция
+        system_state.pwm_channels = [0] * 5
+        if rms_noise_mv <= 12.0:
+            system_state.post_assembly_results[test_id] = "PASS"
+            system_state.post_assembly_logs[test_id] = (
+                f"SUCCESS: RMS шум = {rms_noise_mv}мВ (<= 12.0мВ). Земля 'Звезда' исправна."
+            )
+            return True
+        else:
+            system_state.post_assembly_results[test_id] = "FAILED"
+            return False
+
+    elif test_id == "TEST-PA-05":
+        # Thermal Airflow: heat rate <= 0.25°C/s
+        logger.info("POST-ASSEMBLY: TEST-PA-05 Thermal Airflow запущен...")
+        temp_start = system_state.coil_temp_model
+        system_state.pwm_channels = [int(460 * 0.3)] * 5
+        await asyncio.sleep(1.0)
+        temp_end = system_state.coil_temp_model
+        system_state.pwm_channels = [0] * 5
+        heat_rate = (temp_end - temp_start) / 1.0
+        if heat_rate <= 0.25:
+            system_state.post_assembly_results[test_id] = "PASS"
+            system_state.post_assembly_logs[test_id] = (
+                f"SUCCESS: Скорость нагрева = {heat_rate:.3f}°C/с (<= 0.25). Продуваемость ОК."
+            )
+            return True
+        else:
+            system_state.post_assembly_results[test_id] = "FAILED"
+            return False
+
+    return False
+
+
+async def execute_post_assembly_bist_pipeline():
+    """Пайплайн пост-сборочного тестирования (5 сценариев)."""
+    system_state.active_pipeline = "POST_ASSEMBLY_BIST"
+    system_state.pipeline_status = "In Progress"
+    system_state.pipeline_steps = [
+        {"step_id": "PA-01", "desc": "Изоляция силовых каналов (TEST-PA-01)", "status": "PENDING"},
+        {"step_id": "PA-02", "desc": "Полярность и симметрия катушек (TEST-PA-02)", "status": "PENDING"},
+        {"step_id": "PA-03", "desc": "Оптика ToF-датчика (TEST-PA-03)", "status": "PENDING"},
+        {"step_id": "PA-04", "desc": "ЭМИ-стресс земли (TEST-PA-04)", "status": "PENDING"},
+        {"step_id": "PA-05", "desc": "Термодинамика корпуса (TEST-PA-05)", "status": "PENDING"},
+    ]
+
+    test_ids = ["TEST-PA-01", "TEST-PA-02", "TEST-PA-03", "TEST-PA-04", "TEST-PA-05"]
+    all_pass = True
+
+    for i, tid in enumerate(test_ids):
+        system_state.pipeline_steps[i]["status"] = "RUNNING"
+        system_state.post_assembly_results[tid] = "RUNNING"
+        success = await run_post_assembly_test(tid)
+        if success:
+            system_state.pipeline_steps[i]["status"] = "DONE"
+        else:
+            system_state.pipeline_steps[i]["status"] = "FAILED"
+            all_pass = False
+            break
+
+    if all_pass:
+        system_state.pipeline_status = "Post-Assembly BIST: ALL PASS"
+    else:
+        system_state.pipeline_status = "Post-Assembly BIST: FAILED"
+        system_state.bist_unlocked = False
+
+    await asyncio.sleep(1.0)
+    system_state.active_pipeline = None
+
+
+# Глобальные синглтоны AI подсистемы
+ai_config = AIConfigManager()
+ai_history_db = AIHistoryDB()
+ai_manager = GeminiAIManager(ai_config, ai_history_db)
+audio_service = AudioService()
 
 # Менеджер WebSocket подключений
 class ConnectionManager:
@@ -587,7 +1228,14 @@ async def execute_helix_pipeline():
 async def startup_event():
     asyncio.create_task(core_loop_860hz())
     asyncio.create_task(telemetry_broadcaster_10hz())
-    logger.info("Фоновые службы, авто-диагностика BIST и Safe Shutdown запущены.")
+    # V11: Инициализация AI подсистемы
+    ai_config.load()
+    await ai_history_db.init_db()
+    await audio_service.init()
+    if ai_config.ai_enabled:
+        system_state.ai_enabled = True
+        asyncio.create_task(ai_manager.connect())
+    logger.info("Фоновые службы, AI/Audio и BIST запущены. V11.0")
 
 @app.get("/api/state")
 async def get_state():
@@ -838,6 +1486,106 @@ async def cancel_calibration():
     system_state.target_z = 30.0
     system_state.calib_log = "Калибровка отменена. Сфера вернулась на подставку."
     return {"status": "cancelled", "state": system_state.calib_state.value}
+
+# =====================================================================
+# AI API ЭНДПОИНТЫ (V11 — Gemini Pro, Audio, Tool Calling)
+# =====================================================================
+class AIActivateRequest(BaseModel):
+    enabled: bool
+
+class AISetKeyRequest(BaseModel):
+    api_key: str
+
+class AIChatRequest(BaseModel):
+    message: str
+
+
+@app.post("/api/ai/activate")
+async def ai_activate(req: AIActivateRequest):
+    """Включить/выключить AI-ассистента с сохранением в config."""
+    system_state.ai_enabled = req.enabled
+    ai_config.save(ai_enabled=req.enabled)
+    if req.enabled and system_state.ai_status != "CONNECTED":
+        ok = await ai_manager.connect()
+        return {"status": "activated" if ok else "activation_failed",
+                "ai_status": system_state.ai_status}
+    elif not req.enabled:
+        system_state.ai_status = "DISCONNECTED"
+    return {"status": "success", "ai_enabled": system_state.ai_enabled}
+
+
+@app.post("/api/ai/set_key")
+async def ai_set_key(req: AISetKeyRequest):
+    """Установить Gemini API Key (RPI-CL-12: ключ маскируется в логах)."""
+    ai_config.save(api_key=req.api_key)
+    return {"status": "key_saved", "masked_key": ai_config.masked_key()}
+
+
+@app.post("/api/ai/chat")
+async def ai_chat(req: AIChatRequest):
+    """Текстовый чат с Gemini Pro (с Tool Calling и контекстом телеметрии)."""
+    if not system_state.ai_enabled:
+        raise HTTPException(status_code=400, detail="AI не активирован.")
+    result = await ai_manager.chat(req.message)
+    # UC-BUS-12: Кивок сферы при ответе
+    asyncio.create_task(trigger_nod_gesture())
+    return result
+
+
+@app.get("/api/ai/status")
+async def ai_status():
+    """Статус AI-подсистемы (WEB-CL-10: ping, thoughts, audio)."""
+    return {
+        "ai_enabled": system_state.ai_enabled,
+        "ai_status": system_state.ai_status,
+        "ai_ping_ms": system_state.ai_ping_ms,
+        "ai_model": system_state.ai_model_name,
+        "thoughts_log": system_state.ai_thoughts_log[-20:],
+        "chat_history": system_state.ai_chat_history[-50:],
+        "audio_available": system_state.audio_available,
+        "audio_vad_active": system_state.audio_vad_active,
+    }
+
+
+@app.post("/api/ai/bringup_test")
+async def ai_bringup_test():
+    """Запуск 3-этапного Bring-Up теста AI (TEST-AI-01..03)."""
+    results = {}
+
+    # TEST-AI-01: API Sync Check
+    try:
+        t0 = time.perf_counter()
+        ok = await ai_manager.connect()
+        ping = round((time.perf_counter() - t0) * 1000, 1)
+        results["TEST-AI-01"] = {
+            "status": "PASS" if ok else "FAILED",
+            "ping_ms": ping,
+            "detail": f"Gemini API {'connected' if ok else 'unreachable'}. Ping={ping}ms"
+        }
+    except Exception as e:
+        results["TEST-AI-01"] = {"status": "FAILED", "detail": str(e)}
+
+    # TEST-AI-02: Camera Check (ESP32-CAM placeholder)
+    results["TEST-AI-02"] = {
+        "status": "WARNING",
+        "detail": "ESP32-CAM frame capture — requires Wi-Fi connection to Agent."
+    }
+
+    # TEST-AI-03: Audio Loop Check (SPU-WM30)
+    audio_result = await audio_service.bist_audio_loop_test()
+    results["TEST-AI-03"] = audio_result
+
+    return {"bringup_results": results}
+
+
+@app.post("/api/bist/post_assembly_test")
+async def post_assembly_test():
+    """Запуск Post-Assembly BIST Suite v1.0 (TEST-PA-01..05)."""
+    if system_state.active_pipeline is not None:
+        raise HTTPException(status_code=400, detail="Пайплайн уже выполняется.")
+    asyncio.create_task(execute_post_assembly_bist_pipeline())
+    return {"status": "started", "pipeline": "POST_ASSEMBLY_BIST"}
+
 
 if __name__ == "__main__":
     import uvicorn

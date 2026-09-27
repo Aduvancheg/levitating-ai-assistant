@@ -2,4 +2,5 @@ __init__
 core_loop
 hall_ads1115
 main_server
+network_manager
 tof_vl53l5cx

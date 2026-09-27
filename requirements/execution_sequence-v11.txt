@@ -1,0 +1,10 @@
+====================================================================
+ANTIGRAVITY PHASE 4: EXECUTION SEQUENCE V11.0 (AI & AUDIO INTEGRATION)
+====================================================================
+
+[STEP 1]: Подключение SPU-WM30 через вырез USB_AUX_PASS_THROUGH_SLOT в Lower_Podium_V9.
+[STEP 2]: Проверка аудио-тракта ALSA в консоли RPi 5 (arecord -l / aplay -l).
+[STEP 3]: Запуск FastAPI сервера main_server-v11.py с модулями GeminiAIManager и AudioService.
+[STEP 4]: Открытие UI index_html_template-v11.txt, переход во вкладку 'AI Assistant'.
+[STEP 5]: Ввод GEMINI_API_KEY и запуск 3-этапной проверки (TEST-AI-01..03).
+[STEP 6]: Тестирование голосового диалога и мультимодальной команды 'Что на столе?'.
