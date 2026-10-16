@@ -48,33 +48,43 @@ class TestVoltageToDistance:
         dist = driver.voltage_to_distance(2.0)
         assert abs(dist - 19.0) < 1e-4
 
-    def test_negative_voltage_clamped_to_zero(self):
+    def test_negative_voltage_is_invalid(self):
+        """Review S2: an inverted / broken input must not become a distance."""
         driver = HallADS1115Driver()
-        dist_neg = driver.voltage_to_distance(-1.5)
-        dist_zero = driver.voltage_to_distance(0.0)
-        assert dist_neg == dist_zero
-        assert dist_neg >= 0.0
+        assert driver.voltage_to_distance(-1.5) is None
 
-    def test_nan_input_returns_zero(self):
+    def test_nan_input_returns_none(self):
         driver = HallADS1115Driver()
-        dist = driver.voltage_to_distance(float("nan"))
-        assert dist == 0.0
+        assert driver.voltage_to_distance(float("nan")) is None
 
-    def test_inf_input_returns_zero(self):
+    def test_inf_input_returns_none(self):
         driver = HallADS1115Driver()
-        dist = driver.voltage_to_distance(float("inf"))
-        assert dist == 0.0
+        assert driver.voltage_to_distance(float("inf")) is None
 
-    def test_negative_inf_returns_zero(self):
+    def test_negative_inf_returns_none(self):
         driver = HallADS1115Driver()
-        dist = driver.voltage_to_distance(float("-inf"))
-        assert dist == 0.0
+        assert driver.voltage_to_distance(float("-inf")) is None
 
-    def test_zero_voltage_returns_constant_offset(self):
+    def test_none_input_returns_none(self):
         driver = HallADS1115Driver()
-        # poly at v=0: c = 25.0
-        dist = driver.voltage_to_distance(0.0)
-        assert abs(dist - 25.0) < 1e-4
+        assert driver.voltage_to_distance(None) is None
+
+    def test_zero_voltage_is_invalid_not_working_height(self):
+        """
+        Review S2: 0 V used to map to the constant term c = 25 mm — right at
+        the working height — hiding a dead sensor. It must be rejected.
+        """
+        driver = HallADS1115Driver()
+        assert driver.voltage_to_distance(0.0) is None
+
+    def test_saturated_voltage_is_invalid(self):
+        driver = HallADS1115Driver()
+        assert driver.voltage_to_distance(4.09) is None
+
+    def test_negative_polynomial_result_is_invalid(self):
+        driver = HallADS1115Driver(poly_coeffs=[0.0, -10.0, 5.0])
+        # 5 - 10*2 = -15 mm → outside calibration
+        assert driver.voltage_to_distance(2.0) is None
 
 
 class TestI2CConfigRegisterWrite:
@@ -120,7 +130,8 @@ class TestI2CConfigRegisterWrite:
         # 4 channels × 1 config write each = 4 calls
         assert mock_bus.write_i2c_block_data.call_count == 4
 
-    def test_exception_during_read_returns_safe_fallback(self):
+    def test_exception_during_read_reports_invalid(self):
+        """Review S2: an I2C error must surface as None, not as 0.0 V."""
         mock_bus = MagicMock()
         mock_bus.write_i2c_block_data = MagicMock(side_effect=IOError("Bus error"))
 
@@ -128,5 +139,20 @@ class TestI2CConfigRegisterWrite:
         voltages = driver.read_all_channels_voltage()
 
         assert len(voltages) == 4
-        # All channels should fall back to 0.0 on error
-        assert all(v == 0.0 for v in voltages)
+        assert all(v is None for v in voltages)
+        assert all(d is None for d in driver.read_all_distances())
+
+    def test_conversion_timeout_does_not_return_stale_sample(self):
+        """OS bit never set → must raise, not read the previous conversion."""
+        mock_bus = MagicMock()
+        mock_bus.read_i2c_block_data = MagicMock(return_value=[0x00, 0x00])
+        mock_bus.write_i2c_block_data = MagicMock()
+
+        driver = HallADS1115Driver(i2c_bus=mock_bus)
+        with pytest.raises(TimeoutError):
+            driver.read_channel_raw(0)
+        # Conversion register (0x00) must never have been read
+        read_regs = [c.args[1] for c in mock_bus.read_i2c_block_data.call_args_list]
+        assert 0x00 not in read_regs
+
+        assert driver.read_all_channels_voltage() == [None, None, None, None]

@@ -11,7 +11,12 @@ Covers:
 
 import math
 import pytest
-from brain_rpi5.src.tof_vl53l5cx import ToFMatrixDriver, RotationMatrix, MIN_VALID_DISTANCE_MM
+from brain_rpi5.src.tof_vl53l5cx import (
+    ToFMatrixDriver,
+    RotationMatrix,
+    MIN_VALID_DISTANCE_MM,
+    ZONE_ANGLE_DEG,
+)
 
 
 class TestFindMinimumTrough:
@@ -73,19 +78,58 @@ class TestFindMinimumTrough:
 
 class TestCoordinateTranslation:
 
-    def test_offset_applied_to_x(self):
-        """backlog LS-6: input (20, 5, 40) → base_x = 20 - 45 = -25."""
+    def test_point_above_sensor_maps_to_sensor_position(self):
+        """Sensor sits at X=+45 mm in the Base frame: (0,0,z) → (45,0,z)."""
         driver = ToFMatrixDriver()
-        x, y, z = driver.translate_coordinates(20.0, 5.0, 40.0)
-        assert abs(x - (-25.0)) < 1e-4
-        assert abs(y - 5.0) < 1e-4
+        x, y, z = driver.translate_coordinates(0.0, 0.0, 40.0)
+        assert abs(x - 45.0) < 1e-4
+        assert abs(y - 0.0) < 1e-4
         assert abs(z - 40.0) < 1e-4
 
-    def test_negative_result_allowed(self):
-        """X can go negative if sphere is left of center."""
+    def test_point_above_coil_centre_maps_to_origin(self):
+        """Sphere 45 mm to the -X side of the sensor is above the centre coil."""
         driver = ToFMatrixDriver()
-        x, y, z = driver.translate_coordinates(10.0, 0.0, 30.0)
-        assert abs(x - (-35.0)) < 1e-4
+        x, y, z = driver.translate_coordinates(-45.0, 0.0, 30.0)
+        assert abs(x - 0.0) < 1e-4
+
+    def test_offset_applied_exactly_once(self):
+        """Review S5: base_x - sensor_x must equal OFFSET_X_MM (not 0, not 90)."""
+        driver = ToFMatrixDriver()
+        matrix = [[100.0] * 8 for _ in range(8)]
+        matrix[3][3] = 40.0
+        result = driver.process_matrix_frame(matrix)
+        raw_x = result["raw_xyz"][0]
+        base_x = result["base_xyz"][0]
+        assert abs((base_x - raw_x) - ToFMatrixDriver.OFFSET_X_MM) < 1e-6
+
+
+class TestZoneGeometry:
+    """Review S6: lateral position comes from the zone angle, not a fixed mm/zone."""
+
+    def test_zone_centre_angle(self):
+        # Zone column 3 is half a zone left of the optical axis.
+        x, y, z = ToFMatrixDriver.zone_to_sensor_xyz(3, 3, 40.0)
+        expected = 40.0 * math.tan(math.radians(-0.5 * ZONE_ANGLE_DEG))
+        assert abs(x - expected) < 1e-6
+        assert abs(y - expected) < 1e-6
+        assert z == 40.0
+
+    def test_lateral_offset_scales_with_distance(self):
+        x_near, _, _ = ToFMatrixDriver.zone_to_sensor_xyz(0, 7, 30.0)
+        x_far, _, _ = ToFMatrixDriver.zone_to_sensor_xyz(0, 7, 60.0)
+        assert x_near > 0
+        assert abs(x_far - 2.0 * x_near) < 1e-6
+
+    def test_edge_zone_within_half_fov(self):
+        x, _, z = ToFMatrixDriver.zone_to_sensor_xyz(0, 7, 100.0)
+        half_fov_extent = z * math.tan(math.radians(22.5))
+        assert 0 < x < half_fov_extent
+
+    def test_grid_is_symmetric(self):
+        xl, yl, _ = ToFMatrixDriver.zone_to_sensor_xyz(0, 0, 50.0)
+        xr, yr, _ = ToFMatrixDriver.zone_to_sensor_xyz(7, 7, 50.0)
+        assert abs(xl + xr) < 1e-9
+        assert abs(yl + yr) < 1e-9
 
 
 class TestRotationMatrix:
@@ -137,9 +181,9 @@ class TestRotationMatrix:
         # Raw sensor reading: sphere at (20, 5, 40)
         bx, by, bz = driver.translate_coordinates(20.0, 5.0, 40.0)
 
-        # With rotation, the result should differ from simple subtraction
-        simple_x = 20.0 - 45.0  # = -25.0
-        # Rotated result should NOT equal the simple subtraction
+        # With rotation, the result should differ from the plain offset
+        simple_x = 20.0 + 45.0  # = 65.0
+        # Rotated result should NOT equal the un-rotated translation
         # (unless the angle is exactly 0)
         assert not (abs(bx - simple_x) < 1e-4 and abs(bz - 40.0) < 1e-4)
 
@@ -151,7 +195,7 @@ class TestProcessMatrixFrame:
         matrix = [[100.0] * 8 for _ in range(8)]
         matrix[2][3] = 25.5  # Trough at (2, 3)
 
-        result = driver.process_matrix_frame(matrix, fov_mm_per_zone=5.0)
+        result = driver.process_matrix_frame(matrix)
 
         assert result["min_grid"] == (2, 3)
         assert len(result["raw_xyz"]) == 3

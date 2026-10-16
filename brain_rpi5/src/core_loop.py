@@ -47,6 +47,51 @@ def calculate_crc8(data: bytes) -> int:
 
 
 # =====================================================================
+# Sensor validity helper — bounded hold of the last valid sample
+# =====================================================================
+
+def _is_finite_number(value: Optional[float]) -> bool:
+    """True if value is a real, finite number (not None / NaN / inf)."""
+    if value is None:
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+class HoldLastValid:
+    """
+    Bridges short sensor dropouts without masking real failures.
+
+    A valid sample passes through and is remembered. An invalid sample
+    (None / NaN / inf) is replaced by the last valid one for at most
+    `max_stale` consecutive frames. After that — or if no valid sample
+    was ever seen — `update()` returns None and the caller must treat
+    the sensor as unavailable (review S2: never substitute 0.0).
+    """
+
+    def __init__(self, max_stale: int = 5) -> None:
+        self.max_stale = max_stale
+        self._last: Optional[float] = None
+        self._stale: int = 0
+
+    def update(self, value: Optional[float]) -> Optional[float]:
+        if _is_finite_number(value):
+            self._last = float(value)  # type: ignore[arg-type]
+            self._stale = 0
+            return self._last
+        self._stale += 1
+        if self._last is None or self._stale > self.max_stale:
+            return None
+        return self._last
+
+    def reset(self) -> None:
+        self._last = None
+        self._stale = 0
+
+
+# =====================================================================
 # Complementary Filter — Sigmoidal blending (architecture §5)
 # =====================================================================
 
@@ -59,19 +104,35 @@ class ComplementaryFilter:
     would interpret as sudden drops / spikes.
 
     Transition zone: 49 mm (100% Hall) ↔ 61 mm (100% ToF).
+
+    The sigmoid is normalised over the transition zone so the weights
+    are exactly 0 / 1 at its edges — no step at 49 mm or 61 mm (review C3).
+
+    Weights are selected from the *previous* fused estimate rather than
+    from the mean of the two raw readings, so a saturated or out-of-range
+    sensor cannot bias its own weight (review C6). The weight function is
+    continuous, so no extra hysteresis band is needed to avoid chatter.
     """
 
     HALL_MAX_Z_MM: float = 49.0
     TOF_MIN_Z_MM: float = 61.0
 
-    def __init__(self, steepness: float = 0.5) -> None:
+    def __init__(self, steepness: float = 0.5, max_stale_frames: int = 5) -> None:
         """
         Args:
-            steepness: Controls sigmoid slope. Higher = sharper transition.
-                       0.5 provides smooth blending across the 12 mm zone.
+            steepness:        Controls sigmoid slope. Higher = sharper transition.
+                              0.5 provides smooth blending across the 12 mm zone.
+            max_stale_frames: How many consecutive invalid samples of one sensor
+                              are bridged with its last valid value.
         """
         self._steepness = steepness
         self._midpoint = (self.HALL_MAX_Z_MM + self.TOF_MIN_Z_MM) / 2.0
+        self._s_lo = self._sigmoid(self.HALL_MAX_Z_MM)
+        self._s_hi = self._sigmoid(self.TOF_MIN_Z_MM)
+
+        self._hall = HoldLastValid(max_stale_frames)
+        self._tof = HoldLastValid(max_stale_frames)
+        self._last_fused: Optional[float] = None
 
     def _sigmoid(self, z: float) -> float:
         """Logistic sigmoid: returns 0..1 (0 = all Hall, 1 = all ToF)."""
@@ -86,7 +147,8 @@ class ComplementaryFilter:
 
         Below HALL_MAX_Z_MM: pure Hall (1.0, 0.0)
         Above TOF_MIN_Z_MM: pure ToF  (0.0, 1.0)
-        Between: sigmoidal blend.
+        Between: sigmoidal blend, normalised to reach exactly 0 and 1
+        at the zone edges (continuous weights).
         """
         z = float(estimated_z_mm)
         if z <= self.HALL_MAX_Z_MM:
@@ -94,25 +156,49 @@ class ComplementaryFilter:
         if z >= self.TOF_MIN_Z_MM:
             return 0.0, 1.0
 
-        tof_w = self._sigmoid(z)
+        tof_w = (self._sigmoid(z) - self._s_lo) / (self._s_hi - self._s_lo)
+        tof_w = max(0.0, min(1.0, tof_w))
         hall_w = 1.0 - tof_w
         return hall_w, tof_w
 
-    def fuse(self, hall_z_mm: float, tof_z_mm: float) -> float:
-        """Combine Hall and ToF Z measurements via sigmoidal blending."""
-        if math.isnan(hall_z_mm) or math.isinf(hall_z_mm):
-            hall_z_mm = getattr(self, '_last_valid_hall', 0.0)
+    def reset(self) -> None:
+        """Forget sensor history and the previous fused estimate."""
+        self._hall.reset()
+        self._tof.reset()
+        self._last_fused = None
+
+    def fuse(
+        self,
+        hall_z_mm: Optional[float],
+        tof_z_mm: Optional[float],
+    ) -> Optional[float]:
+        """
+        Combine Hall and ToF Z measurements via sigmoidal blending.
+
+        Invalid inputs (None / NaN / inf) are bridged for a few frames.
+        If only one sensor is available, it is used alone. If neither is
+        available, returns None — the caller must enter safe state.
+        """
+        hall = self._hall.update(hall_z_mm)
+        tof = self._tof.update(tof_z_mm)
+
+        if hall is None and tof is None:
+            self._last_fused = None
+            return None
+        if hall is None:
+            fused = tof
+        elif tof is None:
+            fused = hall
         else:
-            self._last_valid_hall = hall_z_mm
-            
-        if math.isnan(tof_z_mm) or math.isinf(tof_z_mm):
-            tof_z_mm = getattr(self, '_last_valid_tof', 0.0)
-        else:
-            self._last_valid_tof = tof_z_mm
-            
-        approx_z = (hall_z_mm + tof_z_mm) / 2.0
-        hall_w, tof_w = self.compute_weights(approx_z)
-        return hall_w * hall_z_mm + tof_w * tof_z_mm
+            ref = self._last_fused
+            if ref is None:
+                # Cold start: no history yet, fall back to the raw mean.
+                ref = (hall + tof) / 2.0
+            hall_w, tof_w = self.compute_weights(ref)
+            fused = hall_w * hall + tof_w * tof
+
+        self._last_fused = fused
+        return fused
 
 
 # =====================================================================
@@ -425,6 +511,19 @@ class LevitationCoreLoop:
     TARGET_LOOP_HZ: int = 800
     TARGET_DT_S: float = 1.0 / TARGET_LOOP_HZ
 
+    # Upper bound on dt fed to the PID. A scheduling stall must not dump
+    # a huge chunk into the integrator in a single tick.
+    MAX_PID_DT_S: float = 0.02
+
+    # Thermal throttling (UC-BUS-08 / RPI-CL-7): Target Z is lowered by
+    # this many mm per tick while throttling, and restored at the same
+    # rate once the coils have cooled below THROTTLE_OFF.
+    THERMAL_Z_STEP_MM: float = 0.01
+    THERMAL_MIN_Z_MM: float = 5.0
+
+    # RPI-11: Software Slew-Rate Limiter (max PWM change per tick).
+    MAX_PWM_STEP_PER_TICK: int = 10
+
     def __init__(
         self,
         serial_port: Optional[object] = None,
@@ -459,6 +558,18 @@ class LevitationCoreLoop:
         # A sudden jump of > 2000 mm/s is physically impossible (sensor blocked / intercepted).
         self.MAX_DZ_DT: float = 2000.0
 
+        # Sensor-fault safe state (review S2)
+        self.state_sensor_fault: bool = False
+        self._x_hold = HoldLastValid(max_stale=5)
+        self._y_hold = HoldLastValid(max_stale=5)
+
+        # Timestamp of the previous sensor sample (review C1)
+        self._last_sample_t: Optional[float] = None
+        self.last_dt_s: float = self.TARGET_DT_S
+
+        # Persistent thermal Z offset, always <= 0 (review C4)
+        self._thermal_z_offset_mm: float = 0.0
+
     def setup_posix_realtime(self) -> None:
         """
         Elevate the process to real-time priority (SCHED_FIFO) and pin to a dedicated CPU core.
@@ -477,6 +588,9 @@ class LevitationCoreLoop:
             logger.warning("Permission denied for SCHED_FIFO. Run with sudo for real-time performance!")
         except AttributeError:
             logger.warning("OS does not support POSIX schedulers (Windows/macOS?). Running normally.")
+        except OSError as exc:
+            # e.g. EINVAL when CPU 3 does not exist on this host
+            logger.warning("Real-time setup failed (%s). Running normally.", exc)
 
     async def run(
         self,
@@ -489,9 +603,13 @@ class LevitationCoreLoop:
         Args:
             read_sensors_callback: An async callable returning a dict with:
                 {
-                    "hall_z_mm": float,
-                    "tof_xyz": (float, float, float),
+                    "hall_z_mm": float | None,
+                    "tof_xyz": (float, float, float) | None,
                 }
+                Any value may be None / NaN when the sensor has no valid
+                reading. Short dropouts are bridged with the last valid
+                value; longer ones put the loop into SENSOR_FAULT
+                (coils off) until valid data returns.
             max_iterations: Stop after N iterations (None = run forever).
         """
         self.setup_posix_realtime()
@@ -507,23 +625,33 @@ class LevitationCoreLoop:
                     sensor_data = await read_sensors_callback()
                 except Exception as exc:
                     logger.error("Sensor read failed: %s", exc)
-                    # Safe mode: zero all outputs
-                    self._last_duties = [0, 0, 0, 0, 0]
-                    self._send_packet(self._last_duties)
+                    sensor_data = None
+
+                # 2. Time delta = real period between consecutive samples
+                #    (review C1: NOT the duration of the current iteration).
+                now = time.perf_counter()
+                dt = self._update_dt(now)
+
+                # 3. Validate + fuse. Missing data is never replaced by 0.0
+                #    (review S2): it is bridged briefly, then -> safe state.
+                measurement = self._build_measurement(sensor_data)
+                if measurement is None:
+                    if not self.state_sensor_fault:
+                        logger.error("SENSOR_FAULT: no valid position data — coils de-energised")
+                    self.state_sensor_fault = True
+                    self._enter_safe_tick()
+
+                    self._iteration_count += 1
+                    if max_iterations is not None and self._iteration_count >= max_iterations:
+                        break
                     await asyncio.sleep(self.TARGET_DT_S)
                     continue
 
-                # 2. Sensor fusion (Z-axis)
-                hall_z = float(sensor_data.get("hall_z_mm", 0.0))
-                tof_x, tof_y, tof_z = sensor_data.get("tof_xyz", (0.0, 0.0, 0.0))
-                fused_z = self.filter.fuse(hall_z, tof_z)
+                if self.state_sensor_fault:
+                    logger.warning("Sensor data restored — leaving SENSOR_FAULT")
+                    self.state_sensor_fault = False
 
-                measurement = (tof_x, tof_y, fused_z)
-
-                # 3. Time Delta
-                dt = time.perf_counter() - loop_start
-                if dt <= 0:
-                    dt = self.TARGET_DT_S
+                fused_z = measurement[2]
 
                 # 4. Anomaly Detection (Physical Lock)
                 if self._prev_z is not None:
@@ -535,6 +663,7 @@ class LevitationCoreLoop:
 
                 if self.state_physical_lock:
                     self._safe_shutdown()
+                    self.pid.reset_all()
                     
                     self._iteration_count += 1
                     if max_iterations is not None and self._iteration_count >= max_iterations:
@@ -543,16 +672,15 @@ class LevitationCoreLoop:
                     await asyncio.sleep(self.TARGET_DT_S)
                     continue
 
-                # 5. Thermal Throttling
+                # 5. Thermal Throttling — persistent offset (review C4)
                 self.state_thermal_throttling = self.thermal_model.update(dt, self._last_duties)
-                active_setpoint = list(self.setpoint)
-                if self.state_thermal_throttling:
-                    # Gradually lower Target Z to cool down (0.01 mm/tick per RPI-CL-7)
-                    active_setpoint[2] = max(5.0, active_setpoint[2] - 0.01)
+                self._update_thermal_offset()
+                active_setpoint = self.active_setpoint
 
                 # 6. PID compute
+                pid_dt = min(dt, self.MAX_PID_DT_S)
                 pid_x, pid_y, pid_z = self.pid.compute(
-                    tuple(active_setpoint), measurement, dt
+                    active_setpoint, measurement, pid_dt
                 )
 
                 # 7. Map to 5 coil duties
@@ -560,7 +688,7 @@ class LevitationCoreLoop:
                 
                 # RPI-11: Software Slew-Rate Limiter (Lenz's Law protection)
                 # Max allowed PWM change per 1.16ms tick (860Hz) is 10
-                MAX_PWM_STEP_PER_TICK = 10
+                MAX_PWM_STEP_PER_TICK = self.MAX_PWM_STEP_PER_TICK
                 clamped_duties = []
                 for i in range(5):
                     prev = self._last_duties[i]
@@ -599,6 +727,103 @@ class LevitationCoreLoop:
     def stop(self) -> None:
         """Request a graceful stop of the control loop."""
         self._running = False
+
+    # -----------------------------------------------------------------
+    # State helpers
+    # -----------------------------------------------------------------
+
+    @property
+    def active_setpoint(self) -> Tuple[float, float, float]:
+        """Setpoint actually fed to the PID (user setpoint + thermal offset)."""
+        sx, sy, sz = self.setpoint
+        return (sx, sy, sz + self._thermal_z_offset_mm)
+
+    @property
+    def thermal_z_offset_mm(self) -> float:
+        return self._thermal_z_offset_mm
+
+    def reset_physical_lock(self, confirm: bool = False) -> bool:
+        """
+        Clear a latched PHYSICAL_LOCK (review C2).
+
+        Requires an explicit confirmation flag so it cannot be cleared
+        by accident. PID state and velocity history are reset so the
+        loop restarts cleanly.
+
+        Returns:
+            True if the lock was cleared.
+        """
+        if not confirm:
+            logger.warning("reset_physical_lock() called without confirm=True — ignored")
+            return False
+        self.state_physical_lock = False
+        self._prev_z = None
+        self.pid.reset_all()
+        logger.info("PHYSICAL_LOCK cleared by operator")
+        return True
+
+    def _update_dt(self, now: float) -> float:
+        """Return the time since the previous sample and remember `now`."""
+        if self._last_sample_t is None:
+            dt = self.TARGET_DT_S
+        else:
+            dt = now - self._last_sample_t
+            if dt <= 0.0:
+                dt = self.TARGET_DT_S
+        self._last_sample_t = now
+        self.last_dt_s = dt
+        return dt
+
+    def _build_measurement(
+        self, sensor_data: Optional[Dict]
+    ) -> Optional[Tuple[float, float, float]]:
+        """
+        Turn raw sensor data into an (X, Y, Z) measurement.
+
+        Returns None if any axis has no valid data (after the short
+        hold window) — the caller must then enter safe state.
+        """
+        if not isinstance(sensor_data, dict):
+            sensor_data = {}
+
+        hall_z = sensor_data.get("hall_z_mm")
+        tof_xyz = sensor_data.get("tof_xyz")
+        if isinstance(tof_xyz, (tuple, list)) and len(tof_xyz) == 3:
+            tof_x, tof_y, tof_z = tof_xyz
+        else:
+            tof_x = tof_y = tof_z = None
+
+        fused_z = self.filter.fuse(hall_z, tof_z)
+        x = self._x_hold.update(tof_x)
+        y = self._y_hold.update(tof_y)
+
+        if fused_z is None or x is None or y is None:
+            return None
+        return (x, y, fused_z)
+
+    def _enter_safe_tick(self) -> None:
+        """One tick of SENSOR_FAULT: coils off, controller state cleared."""
+        self._safe_shutdown()
+        self.pid.reset_all()
+        self._prev_z = None
+
+    def _update_thermal_offset(self) -> None:
+        """
+        Lower Target Z by THERMAL_Z_STEP_MM per tick while throttling,
+        never below THERMAL_MIN_Z_MM; restore it at the same rate after
+        the coils have cooled. The offset lives in the loop state so it
+        accumulates across ticks (review C4).
+        """
+        base_z = self.setpoint[2]
+        min_offset = min(0.0, self.THERMAL_MIN_Z_MM - base_z)
+        if self.state_thermal_throttling:
+            self._thermal_z_offset_mm = max(
+                min_offset, self._thermal_z_offset_mm - self.THERMAL_Z_STEP_MM
+            )
+        else:
+            self._thermal_z_offset_mm = min(
+                0.0, self._thermal_z_offset_mm + self.THERMAL_Z_STEP_MM
+            )
 
     def _send_packet(self, duties: List[int]) -> None:
         """Serialise and send a PWM packet, respecting dry-run mode."""

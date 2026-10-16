@@ -9,11 +9,17 @@ Conforms to:
   - backlog LS-5 (860 SPS, async operable, mock-friendly)
   - quality.md §2 (type hints, NaN/inf rejection, exception handling)
   - quality.md §4 (boundary testing for anomalous values)
+
+Invalid readings (I2C error, conversion timeout, NaN, voltage outside the
+plausible SS49E range) are reported as None — never as a substitute number.
+A fake 0 V would map to the polynomial constant term, i.e. a plausible
+working height, and hide the failure from the control loop (review S2).
 """
 
 from __future__ import annotations
 
 import math
+import time
 import logging
 from typing import List, Optional
 
@@ -43,11 +49,21 @@ class HallADS1115Driver:
     # Full-scale voltage for PGA = ±4.096 V
     _FULL_SCALE_V: float = 4.096
 
+    # Plausible SS49E output window. The sensor's rail-to-rail swing is
+    # roughly 0.86..4.21 V at 5 V supply; anything outside this window
+    # means a broken wire, a shorted input or ADC saturation.
+    DEFAULT_VALID_VOLTAGE_RANGE = (0.2, 4.0)
+
+    # OS-bit polling: one conversion at 860 SPS takes ~1.2 ms.
+    _POLL_INTERVAL_S: float = 0.0002
+    _POLL_MAX_ATTEMPTS: int = 25  # ~5 ms budget
+
     def __init__(
         self,
         i2c_bus: Optional[object] = None,
         address: int = 0x48,
         poly_coeffs: Optional[List[float]] = None,
+        valid_voltage_range: Optional[tuple] = None,
     ) -> None:
         """
         Args:
@@ -55,22 +71,24 @@ class HallADS1115Driver:
             address:      I2C address of ADS1115 (default 0x48).
             poly_coeffs:  Calibration polynomial [a, b, c] for
                           distance_mm = a*V² + b*V + c.
+            valid_voltage_range: (min_v, max_v) accepted as a real reading.
         """
         self.i2c_bus = i2c_bus
         self.address = address
         self.poly_coeffs: List[float] = poly_coeffs or [1.2, -5.4, 25.0]
+        self.valid_voltage_range = valid_voltage_range or self.DEFAULT_VALID_VOLTAGE_RANGE
 
     # -----------------------------------------------------------------
     # Conversion helpers
     # -----------------------------------------------------------------
 
-    def raw_to_voltage(self, raw_val: int) -> float:
+    def raw_to_voltage(self, raw_val: int) -> Optional[float]:
         """
         Convert signed 16-bit ADC value to voltage.
 
         Range: -4.096 V to +4.096 V (PGA = ±4.096 V).
         Handles unsigned overflow wrapping (values > 32767).
-        Rejects NaN and inf — returns 0.0 as safe fallback.
+        Rejects NaN and inf — returns None.
         """
         # Wrap unsigned to signed 16-bit
         if raw_val > 32767:
@@ -81,39 +99,51 @@ class HallADS1115Driver:
         # Reject non-finite results (quality.md §4: boundary testing)
         if math.isnan(voltage) or math.isinf(voltage):
             logger.warning("ADC produced non-finite voltage: raw=%d", raw_val)
-            return 0.0
+            return None
 
         return voltage
 
-    def voltage_to_distance(self, voltage: float) -> float:
+    def voltage_to_distance(self, voltage: Optional[float]) -> Optional[float]:
         """
         Translate sensor voltage to distance in mm using the
         calibration polynomial: distance = a·V² + b·V + c.
 
-        Guards against:
-          - Negative / inverted magnetic field → clamped to 0 V.
-          - NaN / inf input → returns 0.0 mm.
+        Returns None (sensor invalid) for:
+          - None / NaN / inf input.
+          - Voltage outside `valid_voltage_range` (broken wire, short,
+            inverted field, saturation).
+          - Polynomial result that is negative or non-finite (outside
+            the calibrated range).
         """
+        if voltage is None:
+            return None
+
         # Reject non-finite input BEFORE any arithmetic
         if math.isnan(voltage) or math.isinf(voltage):
             logger.warning("Non-finite voltage input: %s", voltage)
-            return 0.0
+            return None
 
-        # Clamp negative voltage anomaly to baseline
-        safe_voltage: float = max(0.0, float(voltage))
+        v_min, v_max = self.valid_voltage_range
+        if not (v_min <= voltage <= v_max):
+            logger.warning(
+                "Hall voltage %.3f V outside plausible range [%.2f, %.2f] V",
+                voltage, v_min, v_max,
+            )
+            return None
 
         a, b, c = self.poly_coeffs
-        distance = a * (safe_voltage ** 2) + b * safe_voltage + c
+        distance = a * (voltage ** 2) + b * voltage + c
 
-        # Physical distance cannot be negative
-        result = max(0.0, float(distance))
-
-        # Final NaN guard on the polynomial result
-        if math.isnan(result) or math.isinf(result):
+        if math.isnan(distance) or math.isinf(distance):
             logger.warning("Polynomial produced non-finite distance")
-            return 0.0
+            return None
 
-        return result
+        # A negative distance means the reading is outside calibration.
+        if distance < 0.0:
+            logger.warning("Polynomial produced negative distance %.2f mm", distance)
+            return None
+
+        return float(distance)
 
     # -----------------------------------------------------------------
     # I2C communication
@@ -152,11 +182,18 @@ class HallADS1115Driver:
         self.i2c_bus.write_i2c_block_data(self.address, _REG_CONFIG, config_bytes)
 
         # Poll for conversion complete (OS bit goes HIGH when done).
-        # At 860 SPS, conversion takes ~1.2 ms.  Max 10 polls.
-        for _ in range(10):
+        # At 860 SPS, conversion takes ~1.2 ms. Wait between polls and
+        # fail loudly on timeout — reading the conversion register before
+        # the OS bit is set would silently return the PREVIOUS sample.
+        ready = False
+        for _ in range(self._POLL_MAX_ATTEMPTS):
             status = self.i2c_bus.read_i2c_block_data(self.address, _REG_CONFIG, 2)
             if status[0] & 0x80:
+                ready = True
                 break
+            time.sleep(self._POLL_INTERVAL_S)
+        if not ready:
+            raise TimeoutError(f"ADS1115 conversion timeout on channel {channel}")
 
         # Read conversion result (2 bytes, big-endian)
         raw_data = self.i2c_bus.read_i2c_block_data(self.address, _REG_CONVERSION, 2)
@@ -164,23 +201,27 @@ class HallADS1115Driver:
 
         return raw_val
 
-    def read_all_channels_voltage(self) -> List[float]:
-        """Read voltages from all 4 channels (A0..A3)."""
+    def read_all_channels_voltage(self) -> List[Optional[float]]:
+        """
+        Read voltages from all 4 channels (A0..A3).
+
+        A channel that fails to read is reported as None.
+        """
         if self.i2c_bus is None:
             # Mock / unit-test mode — return safe midpoint values
             return [2.5, 2.5, 2.5, 2.5]
 
-        voltages: List[float] = []
+        voltages: List[Optional[float]] = []
         for ch in range(4):
             try:
                 raw_val = self.read_channel_raw(ch)
                 voltages.append(self.raw_to_voltage(raw_val))
             except Exception as exc:
                 logger.error("Failed to read Hall channel %d: %s", ch, exc)
-                voltages.append(0.0)  # Safe fallback — not 2.5V
+                voltages.append(None)  # Invalid — never a fake voltage
         return voltages
 
-    def read_all_distances(self) -> List[float]:
-        """Returns distance in mm for each of the 4 Hall sensors."""
+    def read_all_distances(self) -> List[Optional[float]]:
+        """Returns distance in mm for each of the 4 Hall sensors (None = invalid)."""
         voltages = self.read_all_channels_voltage()
         return [self.voltage_to_distance(v) for v in voltages]
