@@ -23,6 +23,16 @@ static uint16_t  target_duties[NUM_PWM_VALS]  = {0, 0, 0, 0, 0};
 static uint16_t  prev_duties[NUM_PWM_VALS]    = {0, 0, 0, 0, 0};
 static bool      has_prev_packet = false;  /* First packet has no delta to check */
 static uint8_t   recovery_count = 0;       /* Hysteresis counter for SAFE_LANDING → ACTIVE */
+static uint64_t  last_ota_keepalive_us = 0; /* Last CMD_PREPARE_OTA while OTA_LOCKED */
+
+/* ---- Helper: enter SAFE_LANDING ----------------------------------- */
+
+static void enter_safe_landing(void) {
+    current_state  = FSM_STATE_SAFE_LANDING;
+    recovery_count = 0;  /* Reset hysteresis on entering SAFE_LANDING */
+    /* Set all targets to 0 for smooth ramp-down */
+    memset(target_duties, 0, sizeof(target_duties));
+}
 
 /* ---- Helper: absolute difference for uint16_t --------------------- */
 
@@ -63,6 +73,7 @@ void fsm_init(uint64_t now_us) {
     last_packet_us = now_us;
     has_prev_packet = false;
     recovery_count = 0;
+    last_ota_keepalive_us = now_us;
     memset(target_duties, 0, sizeof(target_duties));
     memset(prev_duties, 0, sizeof(prev_duties));
 }
@@ -74,6 +85,11 @@ FsmState fsm_get_state(void) {
 bool fsm_feed_packet(const PacketData *packet, uint64_t now_us) {
     if (packet == NULL || !packet->valid) {
         return false;
+    }
+
+    /* Command frames bypass duty validation (review F6) */
+    if (packet->type == FRAME_TYPE_COMMAND) {
+        return fsm_feed_command(packet->command, now_us);
     }
 
     /* OTA lock: reject all dynamic packets until OTA_SUCCESS */
@@ -108,16 +124,29 @@ bool fsm_feed_packet(const PacketData *packet, uint64_t now_us) {
     return true;
 }
 
+bool fsm_feed_command(uint8_t command, uint64_t now_us) {
+    switch (command) {
+    case CMD_PREPARE_OTA:
+        return fsm_command_prepare_ota(now_us);
+    case CMD_OTA_SUCCESS:
+        return fsm_command_ota_success(now_us);
+    default:
+        return false;  /* Unknown command → NAK */
+    }
+}
+
 void fsm_tick(uint64_t now_us) {
     /* Heartbeat check only applies in ACTIVE state.
-     * In OTA_LOCKED, heartbeat is intentionally suspended because
-     * ESP32 is flashing and won't respond (business_e2e_scenarios.md §9.4). */
+     * In OTA_LOCKED, the duty heartbeat is intentionally suspended because
+     * ESP32 is flashing and won't respond (business_e2e_scenarios.md §9.4);
+     * instead the RPi must keep re-sending PREPARE_OTA (review F6). */
     if (current_state == FSM_STATE_ACTIVE) {
         if (now_us - last_packet_us > FSM_HEARTBEAT_TIMEOUT_US) {
-            current_state = FSM_STATE_SAFE_LANDING;
-            recovery_count = 0;  /* Reset hysteresis on entering SAFE_LANDING */
-            /* Set all targets to 0 for smooth ramp-down */
-            memset(target_duties, 0, sizeof(target_duties));
+            enter_safe_landing();
+        }
+    } else if (current_state == FSM_STATE_OTA_LOCKED) {
+        if (now_us - last_ota_keepalive_us > FSM_OTA_KEEPALIVE_TIMEOUT_US) {
+            enter_safe_landing();
         }
     }
 
@@ -125,22 +154,45 @@ void fsm_tick(uint64_t now_us) {
      * The caller (main loop) will call ramp_pwm_duty() toward 0. */
 }
 
-void fsm_command_prepare_ota(uint64_t now_us) {
-    current_state = FSM_STATE_OTA_LOCKED;
+bool fsm_command_prepare_ota(uint64_t now_us) {
+    if (current_state == FSM_STATE_SAFE_LANDING) {
+        /* Never re-energise coils from a landing: the link was already
+         * judged unhealthy.  Recover to ACTIVE first. */
+        return false;
+    }
+
+    last_ota_keepalive_us = now_us;
     last_packet_us = now_us;  /* Reset heartbeat to avoid false trigger */
 
-    /* Lock all channels to near-field safe duty */
+    if (current_state == FSM_STATE_OTA_LOCKED) {
+        return true;  /* Keep-alive only — already locked */
+    }
+
+    current_state = FSM_STATE_OTA_LOCKED;
+    recovery_count = 0;
+
+    /* Lock all channels to near-field safe duty.  The anomaly baseline
+     * follows, so the first post-OTA packet is judged against what the
+     * coils actually carry, not against pre-OTA history. */
     for (uint8_t ch = 0; ch < NUM_PWM_VALS; ch++) {
         target_duties[ch] = FSM_OTA_SAFE_DUTY;
+        prev_duties[ch]   = FSM_OTA_SAFE_DUTY;
     }
+    has_prev_packet = true;
+    return true;
 }
 
-void fsm_command_ota_success(uint64_t now_us) {
+bool fsm_command_ota_success(uint64_t now_us) {
+    if (current_state != FSM_STATE_OTA_LOCKED) {
+        return false;
+    }
+
     current_state = FSM_STATE_ACTIVE;
     last_packet_us = now_us;  /* Reset heartbeat timer */
 
     /* Keep duties at OTA_SAFE_DUTY — RPi 5 will send new targets
      * once the ESP32 reboots and reports back. */
+    return true;
 }
 
 const uint16_t* fsm_get_target_duties(void) {

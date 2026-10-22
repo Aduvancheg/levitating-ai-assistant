@@ -5,13 +5,14 @@
  * Core 1 is dedicated exclusively to:
  *   1. Polling UART FIFO for incoming bytes at 921600 baud.
  *   2. Pushing bytes into the lock-free RingBuffer.
- *   3. Parsing complete binary packets (header/CRC/footer).
- *   4. Writing parsed PacketData into a lock-free single-slot mailbox
- *      for consumption by Core 0 (FSM + PWM).
+ *   3. Parsing complete binary frames (duty + command, header/CRC/footer).
+ *   4. Publishing parsed PacketData through a seqlock mailbox for
+ *      consumption by Core 0 (FSM + PWM).
  *
- * Inter-core communication uses a volatile single-slot mailbox with
- * __dmb() memory barriers to guarantee visibility across Cortex-M0+ cores.
- * This is simpler and faster than SIO FIFO for our use case (~800 packets/s).
+ * Inter-core communication uses a single-writer seqlock (review F5):
+ * the previous "ready flag" mailbox let Core 1 overwrite the packet while
+ * Core 0 was copying it, producing torn reads that the (already checked)
+ * CRC could no longer catch.
  *
  * References:
  *   - levitation_solution_backlog_2-v4.md: RP-9 (Dual-Core Partitioning)
@@ -24,36 +25,40 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "protocol_parser.h"
+#include "ring_buffer.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ---- Lock-free single-slot mailbox -------------------------------- */
+/* ---- Seqlock single-slot mailbox ---------------------------------- */
 
 /**
- * @brief Single-slot mailbox for inter-core PacketData transfer.
+ * @brief Single-slot seqlock mailbox for inter-core PacketData transfer.
  *
- * Producer (Core 1) writes packet data and sets `ready` flag.
- * Consumer (Core 0) reads packet data and clears `ready` flag.
+ * Protocol:
+ *   Producer (Core 1, the ONLY writer):
+ *     seq++ (odd = write in progress) → barrier → write packet →
+ *     barrier → seq++ (even = stable).
+ *   Consumer (Core 0, read-only on shared state):
+ *     s1 = seq; if odd → retry; barrier; copy packet; barrier;
+ *     s2 = seq; if s1 != s2 → retry (torn read discarded).
+ *     A packet is "new" when s1 differs from the last consumed seq.
  *
- * Thread-safety:
- *   - Only Core 1 writes `packet` and sets `ready = true`.
- *   - Only Core 0 reads `packet` and sets `ready = false`.
- *   - Memory barriers (__dmb) ensure visibility across cores.
- *   - If Core 0 hasn't consumed the previous packet before Core 1
- *     produces a new one, the old packet is overwritten (newest-wins).
+ * Newest-wins semantics are preserved; a reader can never observe a
+ * half-written packet.  Consumer retries are bounded so Core 0 never
+ * spins indefinitely.
  */
 typedef struct {
-    PacketData packet;
-    volatile bool ready;    /**< true = new packet available for Core 0 */
+    PacketData        packet;
+    volatile uint32_t seq;   /**< even = stable, odd = write in progress */
 } PacketMailbox;
+
+/** Max consumer retries before giving up for this loop iteration. */
+#define MAILBOX_MAX_READ_RETRIES  4
 
 /**
  * @brief Global mailbox instance — shared between Core 0 and Core 1.
- *
- * Declared extern here, defined in core1_uart_task.cpp.
- * Core 0 reads from this in its main loop.
  */
 extern PacketMailbox g_packet_mailbox;
 
@@ -65,26 +70,46 @@ extern PacketMailbox g_packet_mailbox;
 void mailbox_init(void);
 
 /**
- * @brief Core 0: Check if a new packet is available and consume it.
+ * @brief Core 1: publish a packet (newest-wins).
  *
- * If a packet is ready, copies it to `out_packet` and clears the
- * ready flag. Uses __dmb() for cross-core memory ordering.
+ * Must only ever be called from a single producer context.
+ */
+void mailbox_produce(const PacketData *packet);
+
+/**
+ * @brief Core 0: consume the newest packet if one was published since
+ *        the last successful consume.
  *
  * @param out_packet  Destination for the consumed packet.
- * @return true if a packet was consumed, false if mailbox was empty.
+ * @return true if a new, untorn packet was copied; false if nothing new
+ *         (or the producer kept writing for MAILBOX_MAX_READ_RETRIES).
  */
 bool mailbox_consume(PacketData *out_packet);
 
 /**
+ * @brief Core 1 RX step: try to extract one frame from the ring buffer.
+ *
+ * Portable (no hardware calls) so it is unit-testable on [env:native].
+ * On success the frame and everything before it are discarded.  On
+ * failure, bytes that can no longer start a complete frame are
+ * discarded so that a burst of garbage cannot stall parsing (the parse
+ * window is bounded, so undiscarded garbage would otherwise hide valid
+ * frames behind it).
+ *
+ * @return true if a valid frame was written to out_packet.
+ */
+bool core1_extract_frame(RingBuffer *rb, PacketData *out_packet);
+
+#if defined(UNIT_TEST)
+/** Test hook: simulate the producer being preempted mid-write. */
+void mailbox_test_begin_write(void);
+void mailbox_test_end_write(void);
+#endif
+
+/**
  * @brief Core 1 entry point — UART RX polling + parsing + mailbox.
  *
- * This function never returns. It runs an infinite loop on Core 1:
- *   1. Poll UART FIFO for available bytes.
- *   2. Push bytes into the local RingBuffer.
- *   3. When enough bytes are buffered, attempt packet parsing.
- *   4. On successful parse, write to g_packet_mailbox.
- *
- * On native/host builds, this is a no-op stub.
+ * This function never returns. On native/host builds, it is a no-op stub.
  */
 void core1_entry(void);
 

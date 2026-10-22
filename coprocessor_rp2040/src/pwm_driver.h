@@ -36,6 +36,16 @@
  */
 #define RAMP_STEP_DEFAULT   10
 
+/**
+ * RP-10 Firmware Slew-Rate Failsafe: default max duty change per 1-ms
+ * tick in ACTIVE state (applied via slew_pwm_duty()).
+ *
+ * This is the ONLY slew limiter on the power path (review C5/F7).  It
+ * is a runtime parameter (pwm_set_slew_limit) so that it can be tuned
+ * on the calibration stand; 0 disables limiting (instant apply).
+ */
+#define PWM_SLEW_LIMIT_DEFAULT  10
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,9 +68,29 @@ bool init_pwm_channels(const uint8_t pins[PWM_CHANNELS], uint32_t frequency_hz);
  * Values above MAX_DUTY_LIMIT are clamped (not rejected) so that
  * upstream PID overshoot does not cause a silent failure.
  *
+ * The value is applied IMMEDIATELY (no slew limiting).  The main loop
+ * must use slew_pwm_duty() (ACTIVE) or ramp_pwm_duty() (landing / OTA)
+ * for the power path; set_pwm_duty() is the raw primitive.
+ *
  * @return true on success, false if channel index is out of range.
  */
 bool set_pwm_duty(uint8_t channel, uint16_t duty);
+
+/**
+ * @brief RP-10 failsafe: move a channel toward `target`, limited to
+ *        the configured slew step per call (call every 1 ms).
+ *
+ * With slew limit 0 the target is applied instantly.
+ *
+ * @return Current duty after the step, or 0 on invalid channel.
+ */
+uint16_t slew_pwm_duty(uint8_t channel, uint16_t target);
+
+/** @brief Configure the RP-10 slew step (duty units per tick, 0 = off). */
+void pwm_set_slew_limit(uint16_t step_per_tick);
+
+/** @brief Read-back the configured RP-10 slew step. */
+uint16_t pwm_get_slew_limit(void);
 
 /**
  * @brief Smooth ramp: move a channel toward a target duty at RAMP_STEP_DEFAULT.
