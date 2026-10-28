@@ -1,0 +1,67 @@
+name: CI — Python & Firmware Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  python-tests:
+    name: RPi 5 Brain (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+          cache-dependency-path: "brain_rpi5/pyproject.toml"
+
+      - name: Install system dependencies for sounddevice (PortAudio)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libportaudio2
+
+      - name: Install Python package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./brain_rpi5[test]"
+
+      - name: Run pytest suite
+        run: |
+          pytest brain_rpi5/tests -v --tb=short
+
+  firmware-tests:
+    name: Firmware Native Tests (ESP32 & RP2040)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python for PlatformIO
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}
+
+      - name: Install PlatformIO Core
+        run: |
+          pip install --upgrade platformio
+
+      - name: Run ESP32 Agent native unit tests
+        working-directory: agent_esp32
+        run: |
+          pio test -e native --without-uploading
+
+      - name: Run RP2040 Coprocessor native unit tests
+        working-directory: coprocessor_rp2040
+        run: |
+          pio test -e native --without-uploading
+

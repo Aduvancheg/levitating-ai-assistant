@@ -21,6 +21,9 @@
 
 PacketMailbox g_packet_mailbox;
 
+/** Sequence number of the last packet consumed by Core 0. */
+static uint32_t s_last_consumed_seq = 0;
+
 /* ---- Memory barrier abstraction ----------------------------------- */
 
 #if defined(TARGET_RP2040) || defined(PICO_BOARD) || defined(PICO_ON_DEVICE)
@@ -31,34 +34,39 @@ PacketMailbox g_packet_mailbox;
 
   #define MEMORY_BARRIER()  __dmb()
 #else
-  /* Native / host build — no real barrier needed for single-threaded tests */
-  #define MEMORY_BARRIER()  do {} while(0)
+  /* Native / host build — compiler barrier for deterministic ordering */
+  #if defined(__GNUC__) || defined(__clang__)
+    #define MEMORY_BARRIER()  __asm__ __volatile__("" ::: "memory")
+  #else
+    #define MEMORY_BARRIER()  do {} while(0)
+  #endif
 #endif
 
-/* ---- Mailbox implementation --------------------------------------- */
+/* ---- Mailbox implementation (single-writer seqlock, review F5) ---- */
 
 void mailbox_init(void) {
     memset(&g_packet_mailbox.packet, 0, sizeof(PacketData));
     g_packet_mailbox.packet.valid = false;
     MEMORY_BARRIER();
-    g_packet_mailbox.ready = false;
+    g_packet_mailbox.seq = 0;
+    s_last_consumed_seq  = 0;
     MEMORY_BARRIER();
 }
 
-/**
- * @brief Core 1: Write a parsed packet into the mailbox.
- *
- * Overwrites any unconsumed packet (newest-wins policy).
- * This is acceptable because at ~800 Hz packet rate and ~860 Hz
- * consumption rate, overwrite is extremely rare and the newest
- * data is always more relevant than stale data.
- */
-static void mailbox_produce(const PacketData *packet) {
-    /* Copy packet data first, then set ready flag with barrier.
-     * This ensures Core 0 sees complete data when it reads ready=true. */
+void mailbox_produce(const PacketData *packet) {
+    if (packet == NULL) {
+        return;
+    }
+
+    /* Odd sequence number signals write-in-progress to Core 0 */
+    g_packet_mailbox.seq++;
+    MEMORY_BARRIER();
+
     g_packet_mailbox.packet = *packet;
     MEMORY_BARRIER();
-    g_packet_mailbox.ready = true;
+
+    /* Even sequence number signals stable snapshot */
+    g_packet_mailbox.seq++;
     MEMORY_BARRIER();
 }
 
@@ -67,18 +75,82 @@ bool mailbox_consume(PacketData *out_packet) {
         return false;
     }
 
-    if (!g_packet_mailbox.ready) {
+    for (uint8_t attempt = 0; attempt < MAILBOX_MAX_READ_RETRIES; attempt++) {
+        uint32_t s1 = g_packet_mailbox.seq;
+
+        /* Odd seq means producer is currently writing — retry */
+        if ((s1 & 1u) != 0u) {
+            MEMORY_BARRIER();
+            continue;
+        }
+
+        /* Nothing new published since the last successful consume */
+        if (s1 == s_last_consumed_seq) {
+            return false;
+        }
+
+        MEMORY_BARRIER();
+        PacketData snapshot = g_packet_mailbox.packet;
+        MEMORY_BARRIER();
+
+        uint32_t s2 = g_packet_mailbox.seq;
+        if (s1 == s2) {
+            *out_packet = snapshot;
+            s_last_consumed_seq = s1;
+            return true;
+        }
+        /* s1 != s2: producer overwrote while we were reading — retry */
+    }
+
+    return false;
+}
+
+bool core1_extract_frame(RingBuffer *rb, PacketData *out_packet) {
+    if (rb == NULL || out_packet == NULL) {
         return false;
     }
 
-    MEMORY_BARRIER();
-    *out_packet = g_packet_mailbox.packet;
-    MEMORY_BARRIER();
-    g_packet_mailbox.ready = false;
-    MEMORY_BARRIER();
+    if (ring_buffer_available(rb) < MIN_FRAME_SIZE) {
+        return false;
+    }
 
-    return true;
+    uint8_t linear_buf[TOTAL_PACKET_SIZE * 3];
+    size_t lin_len = ring_buffer_snapshot(rb, linear_buf, sizeof(linear_buf));
+
+    size_t consumed = 0;
+    if (parse_byte_stream(linear_buf, lin_len, out_packet, &consumed)) {
+        if (consumed > 0) {
+            ring_buffer_discard(rb, consumed);
+        }
+        return true;
+    }
+
+    /* Discard leading bytes that cannot possibly start a full frame so
+     * that a burst of garbage cannot permanently fill the parse window. */
+    if (lin_len >= TOTAL_PACKET_SIZE) {
+        size_t stale = lin_len - (TOTAL_PACKET_SIZE - 1);
+        ring_buffer_discard(rb, stale);
+    }
+
+    return false;
 }
+
+#if defined(UNIT_TEST)
+void mailbox_test_begin_write(void) {
+    if ((g_packet_mailbox.seq & 1u) == 0u) {
+        g_packet_mailbox.seq++;
+        MEMORY_BARRIER();
+    }
+}
+
+void mailbox_test_end_write(void) {
+    if ((g_packet_mailbox.seq & 1u) != 0u) {
+        MEMORY_BARRIER();
+        g_packet_mailbox.seq++;
+        MEMORY_BARRIER();
+    }
+}
+#endif
 
 /* ---- Core 1 entry point ------------------------------------------- */
 
@@ -106,23 +178,10 @@ void core1_entry(void) {
             ring_buffer_push(&uart_rb, byte_in);
         }
 
-        /* 2. Attempt packet parsing when enough bytes buffered */
-        if (ring_buffer_available(&uart_rb) >= TOTAL_PACKET_SIZE) {
-            uint8_t linear_buf[TOTAL_PACKET_SIZE * 3];
-            size_t lin_len = ring_buffer_snapshot(
-                &uart_rb, linear_buf, sizeof(linear_buf)
-            );
-
-            PacketData packet;
-            size_t consumed = 0;
-            if (parse_byte_stream(linear_buf, lin_len, &packet, &consumed)) {
-                /* 3. Write parsed packet to mailbox for Core 0 */
-                mailbox_produce(&packet);
-
-                if (consumed > 0) {
-                    ring_buffer_discard(&uart_rb, consumed);
-                }
-            }
+        /* 2. Extract and publish all complete frames buffered so far */
+        PacketData packet;
+        while (core1_extract_frame(&uart_rb, &packet)) {
+            mailbox_produce(&packet);
         }
 
         /* Yield CPU briefly to avoid starving hardware interrupts.

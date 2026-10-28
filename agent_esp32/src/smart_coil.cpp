@@ -19,6 +19,9 @@ static uint8_t coil_pin = 12;
 
 static void hw_coil_init(uint8_t pin) {
     coil_pin = pin;
+    /* Drive gate LOW immediately before attaching LEDC (review F3) */
+    pinMode(coil_pin, OUTPUT);
+    digitalWrite(coil_pin, LOW);
     ledcSetup(COIL_LEDC_CHANNEL, COIL_LEDC_FREQ_HZ, COIL_LEDC_RESOLUTION);
     ledcAttachPin(coil_pin, COIL_LEDC_CHANNEL);
     ledcWrite(COIL_LEDC_CHANNEL, 0);
@@ -126,4 +129,56 @@ void reset_software_fuse(SmartCoilState *state) {
         state->active_start_time_ms = 0;
         state->current_duty         = 0;
     }
+}
+
+CoilRelayStepResult smart_coil_step_with_relay(float roll, float pitch, float gain,
+                                               uint32_t current_time_ms,
+                                               SmartCoilState *state) {
+    if (state == nullptr) {
+        return COIL_STEP_APPLIED;
+    }
+
+    /* 1. Compute requested duty FIRST (review F1):
+     *    When at rest (duty == 0) and Qi is connected, do NOT touch the relay. */
+    uint16_t requested_duty = state->fuse_tripped ? 0 : compute_coil_duty(roll, pitch, gain);
+
+    if (requested_duty > 0) {
+        state->restore_timer_armed = false;
+
+        if (!state->qi_isolated) {
+            /* Isolate Qi BEFORE applying any coil PWM */
+            qi_relay_isolate();
+            return COIL_STEP_WAIT_ISOLATE;
+        }
+
+        uint16_t applied = update_smart_coil(roll, pitch, gain, current_time_ms, state);
+        if (applied > 0) {
+            return COIL_STEP_APPLIED;
+        }
+        /* If update_smart_coil() just tripped the software fuse (applied == 0),
+         * fall through to the zero-duty path so the Qi restore hysteresis timer
+         * starts immediately instead of stranding the Qi charger disconnected. */
+    } else {
+        /* requested_duty == 0: ensure coil output is zeroed */
+        update_smart_coil(roll, pitch, gain, current_time_ms, state);
+    }
+
+    /* Whenever coil output is 0 (including while software fuse is tripped) and
+     * Qi is still isolated, reconnect Qi after QI_RESTORE_HYSTERESIS_MS so the
+     * battery can charge safely while the coil is off. */
+    if (state->qi_isolated) {
+        if (!state->restore_timer_armed) {
+            state->restore_timer_armed = true;
+            state->zero_duty_since_ms  = current_time_ms;
+            return COIL_STEP_APPLIED;
+        }
+
+        if ((current_time_ms - state->zero_duty_since_ms) >= QI_RESTORE_HYSTERESIS_MS) {
+            state->restore_timer_armed = false;
+            qi_relay_restore();
+            return COIL_STEP_WAIT_RESTORE;
+        }
+    }
+
+    return COIL_STEP_APPLIED;
 }

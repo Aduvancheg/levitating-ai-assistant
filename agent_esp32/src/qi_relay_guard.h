@@ -28,8 +28,18 @@
  * Configuration — adapt the GPIO pin to your PCB layout.
  * The relay is Normally-Closed (NC): LOW = Qi circuit connected,
  *                                    HIGH = Qi circuit isolated.
+ *
+ * HARDWARE NOTE (review F2):
+ *   Verify the physical part on the BOM before assembly! Clare/IXYS
+ *   CPC1017N is 1-Form-A (Normally-Open, 100 mA max), which has
+ *   inverted polarity and insufficient current rating for ~1 A Qi
+ *   charging. Use a 1-Form-B (NC) SSR or high-side P-MOSFET switch
+ *   rated >= 1.5 A (or override QI_RELAY_ISOLATE_LEVEL_HIGH below).
  * ------------------------------------------------------------------- */
 #define QI_RELAY_PIN_DEFAULT 13
+#ifndef QI_RELAY_ISOLATE_LEVEL_HIGH
+#define QI_RELAY_ISOLATE_LEVEL_HIGH 1
+#endif
 
 typedef enum {
     QI_STATE_CONNECTED = 0,   /* NC relay closed — Qi charging active   */

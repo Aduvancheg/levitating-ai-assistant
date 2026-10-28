@@ -115,6 +115,22 @@ void test_ramp_invalid_channel(void) {
     TEST_ASSERT_EQUAL_UINT16(0, result);
 }
 
+void test_slew_limit_tunable_and_disable(void) {
+    uint8_t pins[PWM_CHANNELS] = {0, 1, 2, 3, 4};
+    init_pwm_channels(pins, 25000);
+    TEST_ASSERT_EQUAL_UINT16(PWM_SLEW_LIMIT_DEFAULT, pwm_get_slew_limit());
+
+    /* Custom step of 25 */
+    pwm_set_slew_limit(25);
+    TEST_ASSERT_EQUAL_UINT16(25, pwm_get_slew_limit());
+    TEST_ASSERT_EQUAL_UINT16(25, slew_pwm_duty(0, 100));
+    TEST_ASSERT_EQUAL_UINT16(50, slew_pwm_duty(0, 100));
+
+    /* Step = 0 disables limiting (instant apply) */
+    pwm_set_slew_limit(0);
+    TEST_ASSERT_EQUAL_UINT16(300, slew_pwm_duty(0, 300));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_pwm_initialization);
@@ -124,5 +140,6 @@ int main(void) {
     RUN_TEST(test_ramp_clamps_to_max_duty_limit);
     RUN_TEST(test_kill_all_pwm);
     RUN_TEST(test_ramp_invalid_channel);
+    RUN_TEST(test_slew_limit_tunable_and_disable);
     return UNITY_END();
 }

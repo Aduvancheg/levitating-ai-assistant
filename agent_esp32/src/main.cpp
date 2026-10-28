@@ -25,7 +25,18 @@
 
 static const uint8_t BNO085_SDA_PIN    = 14;
 static const uint8_t BNO085_SCL_PIN    = 15;
-static const uint8_t MOSFET_PIN        = 12;
+/**
+ * Smart-coil MOSFET gate pin (review F3):
+ *   On ESP32-CAM, GPIO12 is the MTDI strapping pin (controls flash VDD_SDIO
+ *   voltage at reset: HIGH = 1.8V → bootloop on 3.3V flash modules).
+ *   A 10 kΩ hardware pull-down from MOSFET Gate to GND is MANDATORY if GPIO12
+ *   is used, or override via -DMOSFET_PIN_OVERRIDE=<pin> (e.g., GPIO4 when
+ *   onboard flash LED is unused).
+ */
+#ifndef MOSFET_PIN_OVERRIDE
+#define MOSFET_PIN_OVERRIDE 12
+#endif
+static const uint8_t MOSFET_PIN        = MOSFET_PIN_OVERRIDE;
 static const uint8_t QI_RELAY_PIN      = 13;
 
 /** Loop tick interval: 10 ms = 100 Hz (BNO085 max report rate). */
@@ -163,14 +174,11 @@ void loop() {
         break;
 
     case STATE_COIL_UPDATE: {
-        /* Ensure Qi relay is isolated before coil activation */
-        if (!coil_state.qi_isolated) {
-            qi_relay_isolate();
-            agent_state = STATE_RELAY_WAIT_ISOLATE;
-            break;  /* Wait for settle before proceeding */
-        }
-
-        uint16_t duty = update_smart_coil(
+        /* Review F1: compute_coil_duty() is evaluated FIRST inside
+         * smart_coil_step_with_relay(). The Qi relay is isolated ONLY when
+         * duty > 0, and restored only after QI_RESTORE_HYSTERESIS_MS of
+         * zero duty — eliminating 50 Hz relay clicking at rest. */
+        CoilRelayStepResult step = smart_coil_step_with_relay(
             latest_orientation.roll,
             latest_orientation.pitch,
             COIL_GAIN,
@@ -178,14 +186,13 @@ void loop() {
             &coil_state
         );
 
-        /* If coil returned to zero, begin Qi restoration (non-blocking) */
-        if (duty == 0 && coil_state.qi_isolated && !coil_state.fuse_tripped) {
-            qi_relay_restore();
+        if (step == COIL_STEP_WAIT_ISOLATE) {
+            agent_state = STATE_RELAY_WAIT_ISOLATE;
+        } else if (step == COIL_STEP_WAIT_RESTORE) {
             agent_state = STATE_RELAY_WAIT_RESTORE;
-            break;  /* Wait for settle before health check */
+        } else {
+            agent_state = STATE_HEALTH_CHECK;
         }
-
-        agent_state = STATE_HEALTH_CHECK;
         break;
     }
 
@@ -207,24 +214,14 @@ void loop() {
             last_imu_ok_ms = now;  /* Give it a fresh timeout window */
         }
 
-        /* If software fuse tripped and tilt returned to zero, reset */
+        /* If software fuse tripped and tilt returned to zero, reset.
+         * Qi relay restoration is handled cleanly with hysteresis and
+         * settle-polling by smart_coil_step_with_relay() -> STATE_RELAY_WAIT_RESTORE. */
         if (coil_state.fuse_tripped) {
             float tilt = sqrtf(latest_orientation.roll * latest_orientation.roll +
                                latest_orientation.pitch * latest_orientation.pitch);
             if (tilt < DEADZONE_TILT_DEG) {
                 reset_software_fuse(&coil_state);
-                /* Begin Qi restoration once fuse is cleared and coil is off.
-                 * The next iteration will pick up SETTLING → CONNECTED
-                 * via qi_relay_is_ready() in subsequent state cycles.  */
-                if (coil_state.qi_isolated) {
-                    qi_relay_restore();
-                    /* Note: qi_isolated flag will be cleared when
-                     * STATE_RELAY_WAIT_RESTORE completes in a
-                     * future cycle. For health-check path, we
-                     * start the transition and continue — the
-                     * relay will settle within 5 ms (< 1 loop tick). */
-                    coil_state.qi_isolated = false;
-                }
             }
         }
 

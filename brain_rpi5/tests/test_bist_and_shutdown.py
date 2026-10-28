@@ -9,6 +9,7 @@ Covers:
 
 import asyncio
 import pytest
+from fastapi import HTTPException
 from brain_rpi5.src.main_server import (
     system_state,
     run_single_bist_test,
@@ -17,6 +18,7 @@ from brain_rpi5.src.main_server import (
     bist_retry,
     bist_bypass,
     BypassRequest,
+    BYPASS_CONFIRM_PHRASE,
 )
 
 @pytest.fixture(autouse=True)
@@ -86,10 +88,16 @@ async def test_bist_retry():
 
 @pytest.mark.asyncio
 async def test_bist_bypass():
-    """TEST-6: Bypass overrides interlock."""
+    """TEST-6: Bypass overrides interlock (requires explicit confirm phrase, review A1)."""
     system_state.bist_results["BIST-HW-01"] = "FAILED"
     
-    await bist_bypass(BypassRequest(override=True))
+    # Without confirm phrase, bypass must be rejected with HTTP 400
+    with pytest.raises(HTTPException) as exc_info:
+        await bist_bypass(BypassRequest(override=True))
+    assert exc_info.value.status_code == 400
+    assert system_state.bist_unlocked is False
+
+    await bist_bypass(BypassRequest(override=True, confirm=BYPASS_CONFIRM_PHRASE))
     
     assert system_state.bist_unlocked is True
     assert system_state.bist_bypass_active is True
