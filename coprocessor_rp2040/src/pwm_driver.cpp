@@ -13,6 +13,7 @@
 static uint8_t  channel_pins[PWM_CHANNELS]   = {0, 1, 2, 3, 4};
 static uint16_t channel_duties[PWM_CHANNELS] = {0, 0, 0, 0, 0};
 static uint32_t configured_frequency = 0;
+static uint16_t slew_limit_per_tick  = PWM_SLEW_LIMIT_DEFAULT;
 
 #if defined(TARGET_RP2040) || defined(PICO_BOARD) || defined(PICO_ON_DEVICE)
 /*
@@ -69,6 +70,7 @@ bool init_pwm_channels(const uint8_t pins[PWM_CHANNELS], uint32_t frequency_hz) 
     }
 
     configured_frequency = frequency_hz;
+    slew_limit_per_tick  = PWM_SLEW_LIMIT_DEFAULT;
 
     for (uint8_t i = 0; i < PWM_CHANNELS; i++) {
         if (pins != nullptr) {
@@ -88,16 +90,9 @@ bool set_pwm_duty(uint8_t channel, uint16_t duty) {
     /* Architecture §2: hard clamp to MAX_DUTY_LIMIT (≈45 %).
      * We clamp instead of rejecting so PID overshoot is gracefully handled. */
     uint16_t safe_duty = clamp_duty(duty);
-    uint16_t current = channel_duties[channel];
 
-    /* RP-10 (Firmware Slew-Rate Limiter): limit rate of change to 10 units per ms */
-    int16_t diff = (int16_t)safe_duty - (int16_t)current;
-    if (diff > 10) {
-        safe_duty = current + 10;
-    } else if (diff < -10) {
-        safe_duty = current - 10;
-    }
-
+    /* No rate limiting here: RP-10 lives in slew_pwm_duty() so that the
+     * limiter is explicit, single and tunable (review F7 / C5).        */
     channel_duties[channel] = safe_duty;
     hw_pwm_set(channel_pins[channel], safe_duty);
     return true;
@@ -126,6 +121,25 @@ uint16_t ramp_pwm_duty(uint8_t channel, uint16_t target, uint16_t step) {
     }
 
     return channel_duties[channel];
+}
+
+uint16_t slew_pwm_duty(uint8_t channel, uint16_t target) {
+    if (channel >= PWM_CHANNELS) {
+        return 0;
+    }
+    if (slew_limit_per_tick == 0) {
+        set_pwm_duty(channel, target);
+        return channel_duties[channel];
+    }
+    return ramp_pwm_duty(channel, target, slew_limit_per_tick);
+}
+
+void pwm_set_slew_limit(uint16_t step_per_tick) {
+    slew_limit_per_tick = step_per_tick;
+}
+
+uint16_t pwm_get_slew_limit(void) {
+    return slew_limit_per_tick;
 }
 
 uint16_t get_pwm_duty(uint8_t channel) {

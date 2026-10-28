@@ -21,9 +21,16 @@
  * (backlog LS-4 requirement).
  * =================================================================== */
 
-#define MAX_PULSE_DURATION_MS  500
-#define DEADZONE_TILT_DEG      0.5f
-#define MAX_COIL_DUTY          1023
+#define MAX_PULSE_DURATION_MS     500
+#define DEADZONE_TILT_DEG         0.5f
+#define MAX_COIL_DUTY             1023
+
+/**
+ * Hysteresis delay (ms) after coil duty drops to 0 before reconnecting
+ * the Qi receiver relay (review F1). Prevents relay chatter during
+ * brief zero-crossings or when the sphere is at rest.
+ */
+#define QI_RESTORE_HYSTERESIS_MS  100
 
 /* ESP32 LEDC configuration */
 #define COIL_LEDC_CHANNEL      0
@@ -35,7 +42,15 @@ typedef struct {
     uint32_t active_start_time_ms;
     bool     fuse_tripped;
     bool     qi_isolated;           /* tracks Qi relay state for interlock */
+    uint32_t zero_duty_since_ms;    /* timestamp when duty first returned to 0 */
+    bool     restore_timer_armed;   /* true while waiting hysteresis before restore */
 } SmartCoilState;
+
+typedef enum {
+    COIL_STEP_APPLIED      = 0, /* Duty updated; no relay transition started */
+    COIL_STEP_WAIT_ISOLATE = 1, /* Relay isolation started; wait for settle  */
+    COIL_STEP_WAIT_RESTORE = 2  /* Relay restore started; wait for settle    */
+} CoilRelayStepResult;
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,6 +87,22 @@ uint16_t update_smart_coil(float roll, float pitch, float gain,
  * @brief Reset the software fuse after a cooldown / equilibrium return.
  */
 void reset_software_fuse(SmartCoilState *state);
+
+/**
+ * @brief Coordinated Smart-Coil + Qi-Relay step (review F1).
+ *
+ * Evaluates compute_coil_duty() FIRST:
+ *   - If duty == 0 and Qi is connected: does NOT isolate the relay (no clicking at rest).
+ *   - If duty > 0 and Qi is connected: initiates qi_relay_isolate() and returns
+ *     COIL_STEP_WAIT_ISOLATE without energizing the coil.
+ *   - If duty > 0 and Qi is isolated: applies PWM via update_smart_coil().
+ *   - If duty == 0 (or software fuse tripped) and Qi is isolated: waits
+ *     QI_RESTORE_HYSTERESIS_MS of continuous zero duty before calling
+ *     qi_relay_restore() and returning COIL_STEP_WAIT_RESTORE.
+ */
+CoilRelayStepResult smart_coil_step_with_relay(float roll, float pitch, float gain,
+                                               uint32_t current_time_ms,
+                                               SmartCoilState *state);
 
 #ifdef __cplusplus
 }

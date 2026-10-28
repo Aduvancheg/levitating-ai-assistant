@@ -1,7 +1,7 @@
 import pytest
 import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
-from brain_rpi5.src.network_manager import NetworkManager
+from brain_rpi5.src.network_manager import NetworkManager, CredentialError, validate_wifi_credentials
 from brain_rpi5.src.main_server import system_state
 
 @pytest.mark.asyncio
@@ -12,7 +12,7 @@ async def test_wifi_loss_handover():
     """
     nm = NetworkManager()
     
-    with patch("asyncio.create_subprocess_shell") as mock_run:
+    with patch("asyncio.create_subprocess_exec") as mock_run:
         # 1. Simulate Home Wi-Fi is lost, auto_configure should start AP
         mock_process = AsyncMock()
         mock_process.returncode = 1 # ping fails
@@ -22,7 +22,7 @@ async def test_wifi_loss_handover():
         # Test auto_configure
         await nm.auto_configure()
         
-        # Should have tried to start the AP
+        # Should have tried to start the AP via exec (without shell)
         assert mock_run.call_count >= 1
         # The state should be updated
         assert system_state.base_wifi_mode == "AP"
@@ -42,3 +42,17 @@ async def test_wifi_loss_handover():
             
             # Should return True for success
             assert result is True
+
+
+def test_validate_wifi_credentials_rejects_injection_and_invalid_lengths():
+    """Review A10: Reject newlines, NUL bytes, overlong SSIDs, and short WPA2 passwords."""
+    with pytest.raises(CredentialError):
+        validate_wifi_credentials("", "validpass123")
+    with pytest.raises(CredentialError):
+        validate_wifi_credentials("Bad\nSSID", "validpass123")
+    with pytest.raises(CredentialError):
+        validate_wifi_credentials("GoodSSID", "short")
+    with pytest.raises(CredentialError):
+        validate_wifi_credentials("A" * 33, "validpass123")
+    # Valid credentials pass
+    validate_wifi_credentials("GoodSSID", "validpass123")

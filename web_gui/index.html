@@ -63,9 +63,18 @@
     <header class="border-b border-blue-900/40 bg-slate-950/80 px-6 py-4 flex justify-between items-center">
         <div class="flex items-center space-x-3">
             <div class="w-3 h-3 bg-blue-500 rounded-full animate-pulse glow-blue"></div>
-            <h1 class="text-lg font-bold tracking-wider text-blue-400">ANTIGRAVITY // BIST CONTROL v7.0</h1>
+            <h1 class="text-lg font-bold tracking-wider text-blue-400">ANTIGRAVITY // CONTROL CENTER v11.0</h1>
         </div>
         <div class="flex items-center space-x-4">
+            <!-- Operator API Token Button -->
+            <button onclick="openAuthTokenModal()" class="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-blue-500 text-slate-300 text-xs font-bold rounded tracking-wider transition flex items-center space-x-1.5" title="Operator Bearer Token">
+                <i data-lucide="key-round" class="w-3.5 h-3.5 text-blue-400"></i>
+                <span id="auth-token-btn-label">API TOKEN</span>
+            </button>
+            <!-- AI Status Pill -->
+            <div id="header-ai-badge" class="px-3 py-1 rounded-full text-[11px] font-bold bg-slate-900 text-slate-400 border border-slate-700">
+                AI: DISCONNECTED
+            </div>
             <!-- Safe Shutdown Emergency Button -->
             <button onclick="confirmShutdown()" class="px-3.5 py-1.5 bg-red-950/40 hover:bg-red-600 border border-red-700 hover:border-red-500 hover:glow-red text-red-400 hover:text-white text-xs font-bold rounded tracking-wider transition duration-300 flex items-center space-x-1.5">
                 <i data-lucide="power" class="w-3.5 h-3.5"></i>
@@ -121,18 +130,24 @@
         <section class="lg:col-span-8 flex flex-col space-y-6">
             
             <!-- TAB SELECTOR -->
-            <div class="flex space-x-2 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
-                <button onclick="switchTab('base')" id="tab-btn-base" class="flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 bg-blue-600 text-white shadow-lg glow-blue">
-                    <i data-lucide="hard-drive" class="w-4 h-4 inline-block mr-2 -mt-0.5"></i> #1 Base Telemetry
+            <div class="flex flex-wrap gap-1.5 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
+                <button onclick="switchTab('base')" id="tab-btn-base" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 bg-blue-600 text-white shadow-lg glow-blue">
+                    <i data-lucide="hard-drive" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #1 Base Telemetry
                 </button>
-                <button onclick="switchTab('agent')" id="tab-btn-agent" class="flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
-                    <i data-lucide="orbit" class="w-4 h-4 inline-block mr-2 -mt-0.5"></i> #2 Agent Telemetry
+                <button onclick="switchTab('agent')" id="tab-btn-agent" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                    <i data-lucide="orbit" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #2 Agent Telemetry
                 </button>
-                <button onclick="switchTab('manage')" id="tab-btn-manage" class="flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
-                    <i data-lucide="play-circle" class="w-4 h-4 inline-block mr-2 -mt-0.5"></i> #3 Task Manager
+                <button onclick="switchTab('manage')" id="tab-btn-manage" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                    <i data-lucide="play-circle" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #3 Task Manager
                 </button>
-                <button onclick="switchTab('bist')" id="tab-btn-bist" class="flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
-                    <i data-lucide="activity" class="w-4 h-4 inline-block mr-2 -mt-0.5"></i> #4 BIST Diagnostics
+                <button onclick="switchTab('bist')" id="tab-btn-bist" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                    <i data-lucide="activity" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #4 BIST Diagnostics
+                </button>
+                <button onclick="switchTab('pa')" id="tab-btn-pa" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                    <i data-lucide="shield-check" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #5 Post-Assembly
+                </button>
+                <button onclick="switchTab('ai')" id="tab-btn-ai" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                    <i data-lucide="bot" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #6 AI Assistant
                 </button>
             </div>
 
@@ -474,6 +489,168 @@
                     </div>
                 </div>
             </div>
+
+            <!-- TAB 5: POST-ASSEMBLY BIST SUITE v1.0 (TEST-PA-01..05) -->
+            <div id="tab-content-pa" class="space-y-6 hidden">
+                <div class="glass-panel rounded-xl p-5 space-y-4">
+                    <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+                        <div>
+                            <h3 class="text-sm font-bold text-cyan-400">POST-ASSEMBLY HARDWARE SUITE v1.0 (TEST-PA-01..05)</h3>
+                            <p class="text-[10px] text-slate-500">Финальная приёмо-сдаточная верификация собранного корпуса Базы: изоляция каналов, симметрия 12-секционных катушек, окно ToF (+45 мм), земля «Звезда» и термопродув.</p>
+                        </div>
+                        <button onclick="runPostAssemblySuite()" class="px-5 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded shadow-lg glow-blue transition flex items-center space-x-1.5">
+                            <i data-lucide="play" class="w-4 h-4"></i><span>RUN POST-ASSEMBLY SUITE</span>
+                        </button>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="space-y-2">
+                            <div onclick="togglePaLogDrawer('TEST-PA-01')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-01</span>
+                                    <h4 class="text-xs font-bold">Channel Isolation & Cross-Talk</h4>
+                                    <p class="text-[10px] text-slate-400">Импульс ШИМ на каждый боковой канал: dV[active] ≥ 0.12V, dV[other] ≤ 0.03V.</p>
+                                </div>
+                                <span id="pa-res-TEST-PA-01" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                            </div>
+                            <div id="pa-log-TEST-PA-01" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <div onclick="togglePaLogDrawer('TEST-PA-02')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-02</span>
+                                    <h4 class="text-xs font-bold">Winding Symmetry & North Polarity</h4>
+                                    <p class="text-[10px] text-slate-400">Все 5 катушек формируют North-полюс, разброс амплитуды ≤ 50 мВ.</p>
+                                </div>
+                                <span id="pa-res-TEST-PA-02" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                            </div>
+                            <div id="pa-log-TEST-PA-02" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <div onclick="togglePaLogDrawer('TEST-PA-03')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-03</span>
+                                    <h4 class="text-xs font-bold">ToF Optical Window Clearance (+45.0 mm)</h4>
+                                    <p class="text-[10px] text-slate-400">Проверка отсутствия паразитных бликов корпуса (min ≥ 15 мм, std ≤ 3 мм).</p>
+                                </div>
+                                <span id="pa-res-TEST-PA-03" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                            </div>
+                            <div id="pa-log-TEST-PA-03" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <div onclick="togglePaLogDrawer('TEST-PA-04')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-04</span>
+                                    <h4 class="text-xs font-bold">EMC Ground Bounce Stress</h4>
+                                    <p class="text-[10px] text-slate-400">Шум датчиков Холла при полной нагрузке PWM=460: RMS ≤ 12.0 мВ.</p>
+                                </div>
+                                <span id="pa-res-TEST-PA-04" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                            </div>
+                            <div id="pa-log-TEST-PA-04" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <div onclick="togglePaLogDrawer('TEST-PA-05')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                                <div class="space-y-1">
+                                    <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-05</span>
+                                    <h4 class="text-xs font-bold">Thermal Airflow & Gill Cooling</h4>
+                                    <p class="text-[10px] text-slate-400">Скорость нагрева при 30% PWM ≤ 0.25 °C/с с активным обдувом.</p>
+                                </div>
+                                <span id="pa-res-TEST-PA-05" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                            </div>
+                            <div id="pa-log-TEST-PA-05" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 6: AI ASSISTANT (GEMINI PRO & SPU-WM30 AUDIO - WEB-CL-10) -->
+            <div id="tab-content-ai" class="space-y-6 hidden">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <!-- Left Column: AI Activation, Key & 3-Step Bring-Up -->
+                    <div class="glass-panel rounded-xl p-5 space-y-4">
+                        <div class="flex justify-between items-center border-b border-slate-800 pb-2">
+                            <h3 class="text-sm font-bold text-emerald-400">GEMINI PRO COMPANION</h3>
+                            <button id="btn-ai-toggle" onclick="toggleActivateAI()" class="px-3 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 transition">
+                                ACTIVATE AI: OFF
+                            </button>
+                        </div>
+
+                        <div class="space-y-2">
+                            <label class="text-[11px] text-slate-400 block">Google Gemini API Key:</label>
+                            <input type="password" id="apiKeyInput" placeholder="AIzaSy..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
+                            <div class="text-[10px] text-slate-500">Saved key: <span id="masked-key-label" class="text-slate-300 font-bold">***</span></div>
+                        </div>
+
+                        <button onclick="connectAndSyncAI()" class="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg glow-green transition">
+                            SAVE KEY & CONNECT API
+                        </button>
+
+                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-900 space-y-1.5 text-xs">
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">Gemini Latency (Ping):</span>
+                                <span id="ai-ping-ms" class="font-bold text-emerald-400">0.0 ms</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">SPU-WM30 USB Audio:</span>
+                                <span id="ai-audio-status" class="font-bold text-slate-500">UNAVAILABLE</span>
+                            </div>
+                        </div>
+
+                        <!-- 3-Step AI Hardware Bring-Up Widget (TEST-AI-01..03) -->
+                        <div class="border-t border-slate-800 pt-4 space-y-3">
+                            <div class="flex justify-between items-center">
+                                <h4 class="text-xs font-bold text-slate-300">AI Bring-Up (TEST-AI-01..03)</h4>
+                                <button onclick="runAIBringupTests()" class="px-2.5 py-1 bg-emerald-950/60 hover:bg-emerald-700 border border-emerald-700 rounded text-[10px] font-bold text-emerald-300 transition">
+                                    Run Bring-Up
+                                </button>
+                            </div>
+                            <div class="space-y-2 text-[11px]">
+                                <div class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
+                                    <span>TEST-AI-01: Gemini API Sync</span>
+                                    <span id="test-ai-01-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
+                                </div>
+                                <div class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
+                                    <span>TEST-AI-02: ESP32-CAM Stream</span>
+                                    <span id="test-ai-02-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
+                                </div>
+                                <div class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
+                                    <span>TEST-AI-03: SPU-WM30 Loopback</span>
+                                    <span id="test-ai-03-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Center/Right Column: AI Thoughts & Chat Console -->
+                    <div class="md:col-span-2 glass-panel rounded-xl p-5 flex flex-col justify-between h-[520px]">
+                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs text-emerald-400 font-mono flex items-center justify-between">
+                            <div class="flex items-center space-x-2 truncate">
+                                <i data-lucide="brain-circuit" class="w-4 h-4 text-emerald-400 shrink-0"></i>
+                                <span id="aiThoughtsLog" class="truncate">ИИ-ассистент готов к работе.</span>
+                            </div>
+                            <button onclick="refreshAIStatus()" class="text-[10px] text-slate-400 hover:text-white ml-2 shrink-0">Refresh</button>
+                        </div>
+
+                        <div id="chatHistoryLog" class="flex-1 overflow-y-auto space-y-3 my-4 pr-2 text-xs">
+                            <div class="bg-slate-900/90 p-3 rounded-lg border border-slate-800 max-w-[85%]">
+                                <span class="text-[10px] font-bold text-emerald-400 block mb-1">Antigravity Agent</span>
+                                Привет! Я парию над базой. Спроси меня «Какая высота?», «Что на столе?» или запусти пространственную спираль!
+                            </div>
+                        </div>
+
+                        <div class="flex space-x-2">
+                            <input type="text" id="chatInput" placeholder="Напишите сообщение Агенту (Tool Calling активен)..." class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500" onkeydown="if(event.key==='Enter') sendChatMessage()">
+                            <button onclick="sendChatMessage()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg glow-green transition">
+                                Отправить
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <!-- RIGHT PANEL -->
@@ -606,6 +783,24 @@
         </div>
     </div>
 
+    <!-- OPERATOR API TOKEN MODAL (review A1) -->
+    <div id="auth-token-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+        <div class="glass-panel max-w-md w-full p-6 rounded-2xl border-blue-900/50 space-y-4 glow-blue">
+            <div class="flex items-center space-x-3 text-blue-400">
+                <i data-lucide="key-round" class="w-7 h-7"></i>
+                <h3 class="text-md font-bold">OPERATOR API BEARER TOKEN</h3>
+            </div>
+            <p class="text-xs text-slate-400 leading-relaxed">
+                Введите токен оператора (<code class="text-blue-300">LEVITATION_API_TOKEN</code> или из файла <code class="text-blue-300">api_token</code>) для аутентификации REST-запросов и WebSocket-телеметрии.
+            </p>
+            <input type="password" id="operator-token-input" placeholder="Paste operator token..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500">
+            <div class="flex space-x-3 pt-2">
+                <button onclick="closeAuthTokenModal()" class="flex-1 py-2 border border-slate-800 text-slate-400 hover:text-white rounded text-xs font-bold transition">CANCEL</button>
+                <button onclick="saveOperatorToken()" class="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold transition glow-blue">SAVE & RECONNECT</button>
+            </div>
+        </div>
+    </div>
+
     <!-- FOOTER -->
     <footer class="border-t border-slate-900 bg-slate-950/80 px-6 py-3.5 text-center text-[10px] text-slate-500 flex justify-between items-center">
         <span>R&D PHASE 4 SYSTEM CORE // RASPBERRY PI 5 INSULATED</span>
@@ -618,15 +813,66 @@
         let currentTab = 'base';
         let ws = null;
         let lastPing = Date.now();
+        let aiEnabledState = false;
+
+        function getOperatorToken() {
+            const params = new URLSearchParams(window.location.search);
+            const urlToken = params.get('token');
+            if (urlToken) {
+                localStorage.setItem('levitation_api_token', urlToken.trim());
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+            return (localStorage.getItem('levitation_api_token') || '').trim();
+        }
+
+        function apiFetch(path, options = {}) {
+            const token = getOperatorToken();
+            const headers = Object.assign({}, options.headers || {});
+            if (options.body && !headers['Content-Type']) {
+                headers['Content-Type'] = 'application/json';
+            }
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+            return fetch(path, Object.assign({}, options, { headers })).then(res => {
+                if (res.status === 401) {
+                    document.getElementById('auth-token-btn-label').innerText = "AUTH REQUIRED";
+                    document.getElementById('auth-token-modal')?.classList?.remove('hidden');
+                }
+                return res;
+            });
+        }
+
+        function openAuthTokenModal() {
+            document.getElementById('operator-token-input').value = getOperatorToken();
+            document.getElementById('auth-token-modal').classList.remove('hidden');
+        }
+
+        function closeAuthTokenModal() {
+            document.getElementById('auth-token-modal').classList.add('hidden');
+        }
+
+        function saveOperatorToken() {
+            const val = document.getElementById('operator-token-input').value.trim();
+            localStorage.setItem('levitation_api_token', val);
+            closeAuthTokenModal();
+            if (ws) {
+                ws.close();
+            } else {
+                connectWS();
+            }
+            refreshAIStatus();
+        }
 
         function connectWS() {
-            const wsUri = "ws://" + window.location.hostname + ":8000/ws/telemetry";
+            const wsProto = window.location.protocol === "https:" ? "wss://" : "ws://";
+            const wsHost = window.location.host || (window.location.hostname + ":8000");
+            const wsUri = wsProto + wsHost + "/ws/telemetry";
             ws = new WebSocket(wsUri);
 
             ws.onopen = () => {
-                document.getElementById('ws-status-indicator').className = "w-2.5 h-2.5 rounded-full bg-emerald-500 glow-green";
-                document.getElementById('ws-status-text').innerText = "CONNECTED";
-                document.getElementById('ws-status-text').className = "text-emerald-400 font-bold";
+                // Authenticate first message per review A1
+                ws.send(JSON.stringify({ type: "auth", token: getOperatorToken() }));
             };
 
             ws.onclose = () => {
@@ -638,6 +884,13 @@
 
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
+                if (data.type === "auth_ok") {
+                    document.getElementById('ws-status-indicator').className = "w-2.5 h-2.5 rounded-full bg-emerald-500 glow-green";
+                    document.getElementById('ws-status-text').innerText = "CONNECTED";
+                    document.getElementById('ws-status-text').className = "text-emerald-400 font-bold";
+                    document.getElementById('auth-token-btn-label').innerText = "API TOKEN ✓";
+                    return;
+                }
                 updateTelemetryUI(data);
                 
                 const now = Date.now();
@@ -648,12 +901,25 @@
 
         function switchTab(tabName) {
             document.getElementById(`tab-content-${currentTab}`).classList.add('hidden');
-            document.getElementById(`tab-btn-${currentTab}`).className = "flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800";
+            document.getElementById(`tab-btn-${currentTab}`).className = "flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800";
             
             currentTab = tabName;
             
             document.getElementById(`tab-content-${currentTab}`).classList.remove('hidden');
-            document.getElementById(`tab-btn-${currentTab}`).className = "flex-1 py-2.5 px-4 rounded-md text-sm font-medium transition duration-200 bg-blue-600 text-white shadow-lg glow-blue";
+            const activeClass = tabName === 'ai'
+                ? "flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 bg-emerald-600 text-white shadow-lg glow-green"
+                : "flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 bg-blue-600 text-white shadow-lg glow-blue";
+            document.getElementById(`tab-btn-${currentTab}`).className = activeClass;
+            if (tabName === 'ai') {
+                refreshAIStatus();
+            }
+        }
+
+        function togglePaLogDrawer(testId) {
+            const drawer = document.getElementById(`pa-log-${testId}`);
+            if (drawer) {
+                drawer.classList.toggle('hidden');
+            }
         }
 
         function toggleLogDrawer(testId) {
@@ -686,7 +952,7 @@
                 document.getElementById(`coil-bar-${i}`).style.width = percentage + "%";
             }
 
-            // AGENT DATA: Pitch, Roll, Yaw
+            // AGENT DATA: Pitch, Roll, Yaw, Battery & Smart Coil
             document.getElementById('agent-pitch').innerText = data.agent.attitude_angles[0].toFixed(1) + "°";
             document.getElementById('agent-roll').innerText = data.agent.attitude_angles[1].toFixed(1) + "°";
             document.getElementById('agent-yaw').innerText = data.agent.attitude_angles[2].toFixed(1) + "°";
@@ -694,6 +960,19 @@
             const pitch = data.agent.attitude_angles[0];
             const roll = data.agent.attitude_angles[1];
             document.getElementById('3d-sphere').style.transform = `rotateX(${pitch}deg) rotateY(${roll}deg)`;
+
+            if (typeof data.agent.battery_level === 'number') {
+                const bat = Math.max(0, Math.min(100, data.agent.battery_level));
+                const volts = (3.3 + (bat / 100) * 0.9).toFixed(2);
+                const batEl = document.getElementById('agent-battery');
+                const barEl = document.getElementById('battery-bar');
+                if (batEl) batEl.innerText = `${bat.toFixed(0)}% (${volts}V)`;
+                if (barEl) barEl.style.width = `${bat}%`;
+            }
+            if (typeof data.agent.smart_coil_pwm === 'number') {
+                const scEl = document.getElementById('smart-coil-pwm');
+                if (scEl) scEl.innerText = `${data.agent.smart_coil_pwm} / 1023`;
+            }
 
             // NC RELAY
             const relayState = data.agent.qi_relay_state;
@@ -820,10 +1099,13 @@
                         statusBadge = '<span class="text-slate-500">PENDING</span>';
                     }
                     
-                    stepRow.innerHTML = `
-                        <span class="text-slate-300 font-medium">${step.desc}</span>
-                        ${statusBadge}
-                    `;
+                    const descSpan = document.createElement('span');
+                    descSpan.className = "text-slate-300 font-medium";
+                    descSpan.textContent = step.desc;
+                    const badgeWrap = document.createElement('div');
+                    badgeWrap.innerHTML = statusBadge;
+                    stepRow.appendChild(descSpan);
+                    stepRow.appendChild(badgeWrap);
                     container.appendChild(stepRow);
                 });
                 lucide.createIcons();
@@ -863,13 +1145,20 @@
                             statusBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">PENDING</span>';
                         }
 
-                        stepRow.innerHTML = `
-                            <div class="flex flex-col space-y-0.5">
-                                <span class="font-bold text-slate-300">${step.step_id}</span>
-                                <span class="text-[10px] text-slate-500">${step.desc}</span>
-                            </div>
-                            ${statusBadge}
-                        `;
+                        const infoCol = document.createElement('div');
+                        infoCol.className = "flex flex-col space-y-0.5";
+                        const idSpan = document.createElement('span');
+                        idSpan.className = "font-bold text-slate-300";
+                        idSpan.textContent = step.step_id;
+                        const descSpan = document.createElement('span');
+                        descSpan.className = "text-[10px] text-slate-500";
+                        descSpan.textContent = step.desc;
+                        infoCol.appendChild(idSpan);
+                        infoCol.appendChild(descSpan);
+                        const badgeWrap = document.createElement('div');
+                        badgeWrap.innerHTML = statusBadge;
+                        stepRow.appendChild(infoCol);
+                        stepRow.appendChild(badgeWrap);
                         container.appendChild(stepRow);
                     });
                 } else {
@@ -886,12 +1175,64 @@
                 const btnConfirm = document.getElementById('btn-calib-confirm');
                 if (btnConfirm) btnConfirm.disabled = (data.calibration_fsm.state !== 'WAIT_REMOVAL');
             }
+
+            // POST-ASSEMBLY BIST RESULTS & LOGS
+            if (data.post_assembly) {
+                const paResults = data.post_assembly.results || {};
+                Object.keys(paResults).forEach(testId => {
+                    const res = paResults[testId];
+                    const badge = document.getElementById(`pa-res-${testId}`);
+                    if (badge) {
+                        badge.innerText = res;
+                        if (res === "PASS") {
+                            badge.className = "px-2.5 py-1 rounded text-[10px] font-bold bg-green-950 text-green-400 border border-green-800 glow-green";
+                        } else if (res === "FAILED") {
+                            badge.className = "px-2.5 py-1 rounded text-[10px] font-bold bg-red-950 text-red-400 border border-red-800 glow-red animate-pulse";
+                        } else if (res === "RUNNING") {
+                            badge.className = "px-2.5 py-1 rounded text-[10px] font-bold bg-blue-950 text-blue-400 border border-blue-800 animate-pulse";
+                        } else {
+                            badge.className = "px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800";
+                        }
+                    }
+                });
+                const paLogs = data.post_assembly.logs || {};
+                Object.keys(paLogs).forEach(testId => {
+                    const logBox = document.getElementById(`pa-log-${testId}`);
+                    if (logBox) logBox.innerText = paLogs[testId];
+                });
+            }
+
+            // AI TELEMETRY UPDATES (WEB-CL-10)
+            if (data.ai) {
+                applyAIStatusUI({
+                    ai_enabled: data.ai.enabled,
+                    ai_status: data.ai.status,
+                    ai_ping_ms: data.ai.ping_ms,
+                    thoughts_log: data.ai.thoughts_log,
+                    audio_available: data.ai.audio_available
+                });
+            }
+        }
+
+        function sendPidTunings() {
+            document.getElementById('kp-val').innerText = parseFloat(document.getElementById('slider-kp').value).toFixed(2);
+            document.getElementById('ki-val').innerText = parseFloat(document.getElementById('slider-ki').value).toFixed(2);
+            document.getElementById('kd-val').innerText = parseFloat(document.getElementById('slider-kd').value).toFixed(2);
+        }
+
+        function commitPid() {
+            const kp = parseFloat(document.getElementById('slider-kp').value);
+            const ki = parseFloat(document.getElementById('slider-ki').value);
+            const kd = parseFloat(document.getElementById('slider-kd').value);
+            apiFetch('/api/pid/set_tunings', {
+                method: 'POST',
+                body: JSON.stringify({ kp, ki, kd })
+            }).catch(err => console.error("Error setting PID:", err));
         }
 
         function triggerPipeline(pipelineId) {
-            fetch('/api/manage/execute', {
+            apiFetch('/api/manage/execute', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ command: pipelineId })
             })
             .then(res => res.json())
@@ -904,13 +1245,180 @@
         }
 
         function retrySingleTest(testId) {
-            fetch('/api/bist/retry', {
+            apiFetch('/api/bist/retry', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ test_id: testId })
             })
             .then(res => res.json())
             .catch(err => console.error("Error retrying test:", err));
+        }
+
+        function runPostAssemblySuite() {
+            apiFetch('/api/bist/post_assembly_test', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.detail) alert(`Post-Assembly denied: ${data.detail}`);
+            })
+            .catch(err => console.error("Error starting Post-Assembly BIST:", err));
+        }
+
+        // --- AI ASSISTANT CONTROLS (WEB-CL-10) ---
+        function applyAIStatusUI(st) {
+            aiEnabledState = !!st.ai_enabled;
+            const toggleBtn = document.getElementById('btn-ai-toggle');
+            const headerBadge = document.getElementById('header-ai-badge');
+            if (toggleBtn) {
+                if (aiEnabledState) {
+                    toggleBtn.innerText = "ACTIVATE AI: ON";
+                    toggleBtn.className = "px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-600 text-white border border-emerald-400 glow-green transition";
+                } else {
+                    toggleBtn.innerText = "ACTIVATE AI: OFF";
+                    toggleBtn.className = "px-3 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 transition";
+                }
+            }
+            if (headerBadge) {
+                if (st.ai_status === "CONNECTED") {
+                    headerBadge.innerText = `AI: CONNECTED (${(st.ai_ping_ms || 0).toFixed(0)} ms)`;
+                    headerBadge.className = "px-3 py-1 rounded-full text-[11px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-600 glow-green";
+                } else {
+                    headerBadge.innerText = `AI: ${st.ai_status || 'DISCONNECTED'}`;
+                    headerBadge.className = "px-3 py-1 rounded-full text-[11px] font-bold bg-slate-900 text-slate-400 border border-slate-700";
+                }
+            }
+            const pingEl = document.getElementById('ai-ping-ms');
+            if (pingEl && typeof st.ai_ping_ms === 'number') {
+                pingEl.innerText = `${st.ai_ping_ms.toFixed(1)} ms`;
+            }
+            const audioEl = document.getElementById('ai-audio-status');
+            if (audioEl) {
+                audioEl.innerText = st.audio_available ? "READY (16kHz)" : "UNAVAILABLE";
+                audioEl.className = st.audio_available ? "font-bold text-emerald-400" : "font-bold text-slate-500";
+            }
+            if (Array.isArray(st.thoughts_log) && st.thoughts_log.length > 0) {
+                const thEl = document.getElementById('aiThoughtsLog');
+                if (thEl) thEl.innerText = st.thoughts_log[st.thoughts_log.length - 1];
+            }
+        }
+
+        async function refreshAIStatus() {
+            try {
+                const res = await apiFetch('/api/ai/status');
+                if (!res.ok) return;
+                const data = await res.json();
+                applyAIStatusUI(data);
+            } catch (err) {
+                console.error("AI status error:", err);
+            }
+        }
+
+        async function toggleActivateAI() {
+            const target = !aiEnabledState;
+            try {
+                const res = await apiFetch('/api/ai/activate', {
+                    method: 'POST',
+                    body: JSON.stringify({ enabled: target })
+                });
+                const data = await res.json();
+                await refreshAIStatus();
+                return data;
+            } catch (err) {
+                console.error("AI activate error:", err);
+            }
+        }
+
+        async function connectAndSyncAI() {
+            const key = document.getElementById('apiKeyInput').value.trim();
+            if (key) {
+                const resKey = await apiFetch('/api/ai/set_key', {
+                    method: 'POST',
+                    body: JSON.stringify({ api_key: key })
+                });
+                const keyData = await resKey.json();
+                if (keyData.masked_key) {
+                    document.getElementById('masked-key-label').innerText = keyData.masked_key;
+                }
+                document.getElementById('apiKeyInput').value = '';
+            }
+            await apiFetch('/api/ai/activate', {
+                method: 'POST',
+                body: JSON.stringify({ enabled: true })
+            });
+            await refreshAIStatus();
+        }
+
+        async function runAIBringupTests() {
+            try {
+                const res = await apiFetch('/api/ai/bringup_test', { method: 'POST' });
+                const data = await res.json();
+                const br = data.bringup_results || {};
+                ['TEST-AI-01', 'TEST-AI-02', 'TEST-AI-03'].forEach((id, idx) => {
+                    const badge = document.getElementById(`test-ai-0${idx + 1}-badge`);
+                    const item = br[id];
+                    if (badge && item) {
+                        badge.innerText = item.status;
+                        if (item.status === 'PASS') {
+                            badge.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-700";
+                        } else if (item.status === 'WARNING' || item.status === 'SKIPPED') {
+                            badge.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-700";
+                        } else {
+                            badge.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-red-950 text-red-400 border border-red-700";
+                        }
+                    }
+                });
+                await refreshAIStatus();
+            } catch (err) {
+                console.error("AI Bring-Up error:", err);
+            }
+        }
+
+        function appendChatBubble(role, text) {
+            const chatLog = document.getElementById('chatHistoryLog');
+            const wrapper = document.createElement('div');
+            if (role === 'user') {
+                wrapper.className = "bg-blue-950/40 p-3 rounded-lg border border-blue-800/50 ml-auto max-w-[85%]";
+            } else {
+                wrapper.className = "bg-slate-900/90 p-3 rounded-lg border border-slate-800 max-w-[85%]";
+            }
+            const header = document.createElement('span');
+            header.className = role === 'user'
+                ? "text-[10px] font-bold text-blue-400 block mb-1"
+                : "text-[10px] font-bold text-emerald-400 block mb-1";
+            header.innerText = role === 'user' ? "Вы" : "Antigravity Agent";
+            const body = document.createElement('div');
+            body.className = "whitespace-pre-wrap text-slate-200";
+            body.textContent = text;
+            wrapper.appendChild(header);
+            wrapper.appendChild(body);
+            chatLog.appendChild(wrapper);
+            chatLog.scrollTop = chatLog.scrollHeight;
+        }
+
+        async function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const msg = input.value.trim();
+            if (!msg) return;
+            appendChatBubble('user', msg);
+            input.value = '';
+            try {
+                const res = await apiFetch('/api/ai/chat', {
+                    method: 'POST',
+                    body: JSON.stringify({ message: msg })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    appendChatBubble('assistant', `Ошибка: ${data.detail || res.statusText}`);
+                    return;
+                }
+                let reply = data.response || '';
+                if (Array.isArray(data.tool_calls) && data.tool_calls.length > 0) {
+                    const toolsSummary = data.tool_calls.map(tc => `[Tool ${tc.name}]: ${tc.result}`).join('\n');
+                    reply = reply ? `${reply}\n\n${toolsSummary}` : toolsSummary;
+                }
+                appendChatBubble('assistant', reply || '(пустой ответ)');
+                await refreshAIStatus();
+            } catch (err) {
+                appendChatBubble('assistant', `Сбой сети: ${err}`);
+            }
         }
 
         // --- DOUBLE CONFIRMATION BYPASS MODAL CONTROLS ---
@@ -922,13 +1430,13 @@
             document.getElementById('calib-modal').classList.add('hidden');
         }
         async function startCalib() {
-            await fetch('/api/calibration/start', {method: 'POST'});
+            await apiFetch('/api/calibration/start', {method: 'POST'});
         }
         async function confirmRemovedCalib() {
-            await fetch('/api/calibration/confirm_stand_removed', {method: 'POST'});
+            await apiFetch('/api/calibration/confirm_stand_removed', {method: 'POST'});
         }
         async function cancelCalib() {
-            await fetch('/api/calibration/cancel', {method: 'POST'});
+            await apiFetch('/api/calibration/cancel', {method: 'POST'});
         }
 
         function openBypassModal() {
@@ -955,10 +1463,9 @@
         }
 
         function confirmBypass() {
-            fetch('/api/bist/bypass', {
+            apiFetch('/api/bist/bypass', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ override: true })
+                body: JSON.stringify({ override: true, confirm: "I_ACCEPT_THE_RISK" })
             })
             .then(res => res.json())
             .then(data => {
@@ -969,9 +1476,8 @@
 
         function simulateFaultChange() {
             const selected = document.getElementById('fault-simulator-select').value;
-            fetch('/api/bist/simulate_fault', {
+            apiFetch('/api/bist/simulate_fault', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ test_id: selected === "NONE" ? null : selected })
             })
             .then(res => res.json())
@@ -986,6 +1492,7 @@
 
         window.onload = () => {
             connectWS();
+            refreshAIStatus();
         };
     </script>
 </body>

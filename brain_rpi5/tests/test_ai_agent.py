@@ -23,6 +23,7 @@ from brain_rpi5.src.main_server import (
     AIConfigManager,
     GeminiAIManager,
     AudioService,
+    CalibrationState,
     tool_set_levitation_height,
     tool_inspect_surface,
     tool_clear_temp_cache,
@@ -62,12 +63,16 @@ def reset_system_state():
     system_state.ai_enabled = False
     system_state.ai_status = "DISCONNECTED"
     system_state.ai_ping_ms = 0.0
-    system_state.ai_thoughts_log = []
-    system_state.ai_chat_history = []
+    system_state.ai_thoughts_log.clear()
+    system_state.ai_chat_history.clear()
     system_state.target_z = 25.0
     system_state.agent_pitch = 0.0
     system_state.audio_available = False
     system_state.audio_vad_active = False
+    system_state.active_pipeline = None
+    system_state.bist_unlocked = True
+    system_state.bist_bypass_active = False
+    system_state.calib_state = CalibrationState.UNLOCKED_FLIGHT
     yield
 
 
@@ -261,6 +266,22 @@ async def test_tool_inspect_surface_out_of_range():
     """inspect_surface rejects tilt angles > 30 degrees."""
     result = await tool_inspect_surface(35.0)
     assert "REJECTED" in result
+
+
+@pytest.mark.asyncio
+async def test_tool_interlock_rejects_when_bist_locked_or_calib_incomplete():
+    """Review A2 / RPI-CL-12: AI tools must respect BIST and calibration interlocks."""
+    system_state.bist_unlocked = False
+    res_bist = await tool_set_levitation_height(30.0)
+    assert "REJECTED" in res_bist
+    assert "BIST" in res_bist
+    assert system_state.target_z == 25.0
+
+    system_state.bist_unlocked = True
+    system_state.calib_state = CalibrationState.PARKED
+    res_calib = await tool_inspect_surface(15.0)
+    assert "REJECTED" in res_calib
+    assert "Калибровка" in res_calib
 
 
 @pytest.mark.asyncio

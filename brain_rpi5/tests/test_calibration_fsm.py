@@ -1,17 +1,26 @@
 import asyncio
 import pytest
 from fastapi.testclient import TestClient
-from src.main_server import app, system_state, CalibrationState
+from src.main_server import app, system_state, CalibrationState, get_api_token
 
-client = TestClient(app)
+client = TestClient(app, headers={"Authorization": f"Bearer {get_api_token()}"})
 
 @pytest.fixture(autouse=True)
 def reset_system_state():
+    system_state.__init__()
     system_state.calib_state = CalibrationState.PARKED
     system_state.bist_unlocked = True
     system_state.bist_bypass_active = False
     system_state.calib_timer_task = None
     system_state.target_z = 30.0
+    yield
+    if system_state.calib_timer_task is not None and not system_state.calib_timer_task.done():
+        system_state.calib_timer_task.cancel()
+    if system_state.pipeline_task is not None and not system_state.pipeline_task.done():
+        system_state.pipeline_task.cancel()
+    system_state.calib_timer_task = None
+    system_state.pipeline_task = None
+    system_state.active_pipeline = None
 
 def test_flight_rejected_if_not_unlocked():
     system_state.calib_state = CalibrationState.PARKED

@@ -126,9 +126,9 @@ int main(void) {
         /* 3. FSM tick: heartbeat watchdog + state transitions (RP-4, RP-5) */
         fsm_tick(now_us);
 
-        /* 4. Non-blocking Smooth Ramp tick every 1 ms (RP-8).
-         *    In ACTIVE state: instant duty application (no ramp).
-         *    In SAFE_LANDING / OTA_LOCKED: smooth ramp for safety. */
+        /* 4. Non-blocking Smooth Ramp / Slew tick every 1 ms (RP-8, RP-10).
+         *    In ACTIVE state: apply via tunable RP-10 slew limiter (slew_pwm_duty).
+         *    In SAFE_LANDING / OTA_LOCKED: smooth landing ramp (ramp_pwm_duty). */
         if (now_us - last_ramp_tick_us >= RAMP_TICK_INTERVAL_US) {
             last_ramp_tick_us = now_us;
 
@@ -139,7 +139,7 @@ int main(void) {
                 if (use_ramp) {
                     ramp_pwm_duty(i, targets[i], RAMP_STEP_DEFAULT);
                 } else {
-                    set_pwm_duty(i, targets[i]);
+                    slew_pwm_duty(i, targets[i]);
                 }
             }
         }

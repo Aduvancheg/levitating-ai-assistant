@@ -51,7 +51,7 @@ void qi_relay_init(uint8_t pin) {
 
 #if defined(ARDUINO)
     pinMode(relay_pin, OUTPUT);
-    digitalWrite(relay_pin, LOW);   /* NC default = Qi connected */
+    digitalWrite(relay_pin, QI_RELAY_ISOLATE_LEVEL_HIGH ? LOW : HIGH);   /* NC default = Qi connected */
 #endif
 }
 
@@ -64,7 +64,7 @@ bool qi_relay_isolate(void) {
         return true;   /* Already transitioning to isolated */
     }
 
-    drive_pin(true);               /* HIGH = open NC relay = isolate Qi */
+    drive_pin(QI_RELAY_ISOLATE_LEVEL_HIGH != 0); /* Open NC relay = isolate Qi */
     settle_start_ms = get_time_ms();
     settle_target   = QI_STATE_ISOLATED;
     relay_state     = QI_STATE_SETTLING;
@@ -80,7 +80,7 @@ bool qi_relay_restore(void) {
         return true;   /* Already transitioning to connected */
     }
 
-    drive_pin(false);              /* LOW = close NC relay = Qi active  */
+    drive_pin(QI_RELAY_ISOLATE_LEVEL_HIGH == 0); /* Close NC relay = Qi active */
     settle_start_ms = get_time_ms();
     settle_target   = QI_STATE_CONNECTED;
     relay_state     = QI_STATE_SETTLING;

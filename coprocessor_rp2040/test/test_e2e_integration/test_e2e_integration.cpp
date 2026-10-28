@@ -899,6 +899,38 @@ static void test_e2e_ota_success_resumes_active(void) {
     printf("[PASS] test_e2e_ota_success_resumes_active\n");
 }
 
+static void test_e2e_ota_command_frames_and_keepalive_timeout(void) {
+    reset_pwm();
+    uint64_t t = 0;
+    fsm_init(t);
+
+    /* Send wire-encoded CMD_PREPARE_OTA frame */
+    uint8_t cmd_buf[CMD_PACKET_SIZE];
+    size_t len = serialize_command(CMD_PREPARE_OTA, 0, cmd_buf, sizeof(cmd_buf));
+    assert(len == CMD_PACKET_SIZE);
+
+    PacketData parsed;
+    size_t consumed = 0;
+    assert(parse_byte_stream(cmd_buf, len, &parsed, &consumed));
+    assert(parsed.type == FRAME_TYPE_COMMAND);
+    assert(fsm_feed_packet(&parsed, t));
+    assert(fsm_get_state() == FSM_STATE_OTA_LOCKED);
+
+    /* Refresh keep-alive at t = 2s (< 3s timeout) */
+    t += 2000000ULL;
+    assert(fsm_feed_packet(&parsed, t));
+    fsm_tick(t);
+    assert(fsm_get_state() == FSM_STATE_OTA_LOCKED);
+
+    /* Let keep-alive expire (> 3s without CMD_PREPARE_OTA) → SAFE_LANDING */
+    t += FSM_OTA_KEEPALIVE_TIMEOUT_US + 1;
+    fsm_tick(t);
+    assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+    assert(fsm_get_target_duties()[0] == 0);
+
+    printf("[PASS] test_e2e_ota_command_frames_and_keepalive_timeout\n");
+}
+
 
 /* ===================================================================
  * SCENARIO 10: Smooth Morning Boot — Ramp-Up from 0
@@ -1155,8 +1187,11 @@ static void test_e2e_yoyo_single_packet_stays_landing(void) {
     
     fsm_feed_packet(&parsed, t);
     
-    /* Still in SAFE_LANDING due to hysteresis */
+    /* Still in SAFE_LANDING due to hysteresis, and targets MUST stay 0 */
     assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+    for (uint8_t ch = 0; ch < NUM_PWM_VALS; ch++) {
+        assert(fsm_get_target_duties()[ch] == 0);
+    }
     printf("[PASS] test_e2e_yoyo_single_packet_stays_landing\n");
 }
 
@@ -1176,14 +1211,28 @@ static void test_e2e_yoyo_recovery_requires_threshold(void) {
     size_t consumed = 0;
     parse_byte_stream(wire_buf, sizeof(wire_buf), &parsed, &consumed);
     
+    /* Partial recovery (2 packets) followed by another timeout resets streak */
+    fsm_feed_packet(&parsed, t);
+    t += 1000;
+    fsm_feed_packet(&parsed, t);
+    t += FSM_HEARTBEAT_TIMEOUT_US + 1;
+    fsm_tick(t);
+    assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+
     for (int i = 0; i < FSM_RECOVERY_THRESHOLD - 1; i++) {
         fsm_feed_packet(&parsed, t);
         t += 1000;
         assert(fsm_get_state() == FSM_STATE_SAFE_LANDING);
+        for (uint8_t ch = 0; ch < NUM_PWM_VALS; ch++) {
+            assert(fsm_get_target_duties()[ch] == 0);
+        }
     }
     
     fsm_feed_packet(&parsed, t);
     assert(fsm_get_state() == FSM_STATE_ACTIVE);
+    for (uint8_t ch = 0; ch < NUM_PWM_VALS; ch++) {
+        assert(fsm_get_target_duties()[ch] == 250);
+    }
     
     printf("[PASS] test_e2e_yoyo_recovery_requires_threshold\n");
 }
@@ -1280,6 +1329,7 @@ int main(void) {
     RUN_TEST(test_e2e_ota_locks_duty_at_safe_level);
     RUN_TEST(test_e2e_ota_rejects_dynamic_packets);
     RUN_TEST(test_e2e_ota_success_resumes_active);
+    RUN_TEST(test_e2e_ota_command_frames_and_keepalive_timeout);
 
     /* Scenario 10: Smooth Morning Boot — Ramp-Up */
     RUN_TEST(test_e2e_morning_boot_smooth_ramp_up);

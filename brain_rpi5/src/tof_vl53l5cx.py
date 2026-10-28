@@ -2,8 +2,15 @@
 tof_vl53l5cx.py — VL53L5CX 8×8 ToF Matrix Sensor Driver
 
 Parses 64-zone distance data, identifies the sphere position (minimum
-trough), applies base-offset translation, and performs Gimbal Rotation
-Matrix compensation for macro-levitation.
+trough), converts the zone to sensor-frame XYZ using the zone's angular
+position, then transforms it into the Base frame (sensor offset + Gimbal
+Rotation Matrix).
+
+Frames:
+  - Sensor frame: origin at the ToF optical centre, Z along its axis.
+  - Base frame:   origin at the centre coil. The sensor sits at
+                  (OFFSET_X_MM, OFFSET_Y_MM, 0) in this frame.
+  p_base = R · (p_sensor + t_sensor)      (offset applied exactly once)
 
 Conforms to:
   - architecture.md §5 (Rotation Matrix for Gimbal, OFFSET_X_MM = 45.0)
@@ -20,6 +27,11 @@ from typing import List, Tuple, Dict, Any, Optional
 # Minimum valid ToF reading in mm.  Values at or below this threshold
 # are treated as sensor errors (out-of-range or blocked FoV zone).
 MIN_VALID_DISTANCE_MM: float = 5.0
+
+# VL53L5CX optics: 45° × 45° square field of view split into 8 × 8 zones.
+FOV_DEG: float = 45.0
+GRID_SIZE: int = 8
+ZONE_ANGLE_DEG: float = FOV_DEG / GRID_SIZE  # ≈ 5.625° per zone
 
 
 class RotationMatrix:
@@ -91,11 +103,13 @@ class ToFMatrixDriver:
     Pipeline:
       1. Filter invalid zones (0 mm, below threshold).
       2. Find the trough (minimum distance = sphere position).
-      3. Convert grid indices → mm coordinates.
-      4. Apply sensor offset (OFFSET_X_MM).
+      3. Convert zone angle + distance → sensor-frame XYZ.
+      4. Add the sensor position in the Base frame (OFFSET_X_MM, once).
       5. Apply Gimbal Rotation Matrix to get absolute Base coordinates.
     """
 
+    # Position of the ToF optical centre in the Base frame
+    # (enclosure_architecture_v7.md: ToF at X=+45.0 mm, Y=0.0 mm).
     OFFSET_X_MM: float = 45.0
     OFFSET_Y_MM: float = 0.0
 
@@ -171,32 +185,50 @@ class ToFMatrixDriver:
     # Coordinate translation (with Rotation Matrix)
     # -----------------------------------------------------------------
 
-    def translate_coordinates(
-        self,
-        raw_x_mm: float,
-        raw_y_mm: float,
-        raw_z_mm: float,
+    @staticmethod
+    def zone_to_sensor_xyz(
+        row: int, col: int, distance_mm: float
     ) -> Tuple[float, float, float]:
         """
-        Transform raw ToF coordinates to absolute Base coordinates:
-          1. Apply OFFSET_X_MM.
-          2. Apply Gimbal Rotation Matrix.
+        Convert a zone index and its distance to sensor-frame XYZ.
+
+        Each zone covers ZONE_ANGLE_DEG; its centre is at
+        θ = (index − 3.5) · ZONE_ANGLE_DEG off the optical axis, so the
+        lateral offset grows with distance: x = z · tan(θx) (review S6).
+
+        The reported zone distance is treated as the distance along the
+        sensor axis (Z). If bench tests show the sensor reports radial
+        distance instead, use z = d·cos(θ) here.
+        """
+        centre = (GRID_SIZE - 1) / 2.0
+        theta_x = math.radians((col - centre) * ZONE_ANGLE_DEG)
+        theta_y = math.radians((row - centre) * ZONE_ANGLE_DEG)
+        z = float(distance_mm)
+        return z * math.tan(theta_x), z * math.tan(theta_y), z
+
+    def translate_coordinates(
+        self,
+        sensor_x_mm: float,
+        sensor_y_mm: float,
+        sensor_z_mm: float,
+    ) -> Tuple[float, float, float]:
+        """
+        Transform sensor-frame coordinates to absolute Base coordinates:
+          p_base = R · (p_sensor + t_sensor)
+        where t_sensor = (OFFSET_X_MM, OFFSET_Y_MM, 0) is the sensor
+        position in the Base frame. The offset is applied exactly once
+        (review S5).
 
         Without the rotation step, macro-levitation (tilted base) would
         produce systematic targeting errors.
         """
-        # Step 1: Offset correction (sensor is shifted from coil center)
-        # enclosure_architecture_v7.md: ToF at X=+45.0mm, Y=0.0mm
-        offset_x = float(raw_x_mm) - self.OFFSET_X_MM
-        offset_y = float(raw_y_mm) - self.OFFSET_Y_MM
-        offset_z = float(raw_z_mm)
+        # Step 1: shift from the sensor origin to the Base (coil) origin
+        bx = float(sensor_x_mm) + self.OFFSET_X_MM
+        by = float(sensor_y_mm) + self.OFFSET_Y_MM
+        bz = float(sensor_z_mm)
 
         # Step 2: Gimbal rotation compensation
-        base_x, base_y, base_z = self.rotation.transform(
-            offset_x, offset_y, offset_z
-        )
-
-        return base_x, base_y, base_z
+        return self.rotation.transform(bx, by, bz)
 
     # -----------------------------------------------------------------
     # Full frame processing pipeline
@@ -205,31 +237,26 @@ class ToFMatrixDriver:
     def process_matrix_frame(
         self,
         matrix_8x8: List[List[float]],
-        fov_mm_per_zone: float = 5.0,
     ) -> Dict[str, Any]:
         """
         Process a full 8×8 ToF frame end-to-end.
 
         Args:
-            matrix_8x8:      8×8 distance matrix in mm.
-            fov_mm_per_zone: Physical width of each zone in mm.
+            matrix_8x8: 8×8 distance matrix in mm.
 
         Returns:
             Dict with keys:
               - "min_grid":  (row, col) of the detected sphere.
-              - "raw_xyz":   Raw sensor XYZ before rotation.
-              - "base_xyz":  Absolute Base XYZ after rotation + offset.
+              - "raw_xyz":   Sphere XYZ in the sensor frame.
+              - "base_xyz":  Sphere XYZ in the Base frame (offset + rotation).
         """
         min_row, min_col, min_z = self.find_minimum_trough(matrix_8x8)
 
-        # Convert grid indices to mm relative to matrix centre (3.5, 3.5)
-        raw_x = (min_col - 3.5) * fov_mm_per_zone + self.OFFSET_X_MM
-        raw_y = (min_row - 3.5) * fov_mm_per_zone
-
-        abs_x, abs_y, abs_z = self.translate_coordinates(raw_x, raw_y, min_z)
+        raw_x, raw_y, raw_z = self.zone_to_sensor_xyz(min_row, min_col, min_z)
+        abs_x, abs_y, abs_z = self.translate_coordinates(raw_x, raw_y, raw_z)
 
         return {
             "min_grid": (min_row, min_col),
-            "raw_xyz": (raw_x, raw_y, min_z),
+            "raw_xyz": (raw_x, raw_y, raw_z),
             "base_xyz": (abs_x, abs_y, abs_z),
         }
