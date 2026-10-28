@@ -1,0 +1,7 @@
+Antigravity V12 Deployment Roadmap
+====================================
+1. Verify Raspberry Pi 5 core server `main_server-v12.py` AST syntax.
+2. Verify UI template `index_html_template-v12.txt` video player rendering.
+3. Deploy `backlog_refactoring_ai_agent_v2.md` task suite to Antigravity IDE.
+4. Execute Pytest suite `pytest tests/test_business_e2e_v2.py` verifying Touches 1, 3, and 4.
+5. Deploy hardware base enclosure V9 and calibration stand V1.

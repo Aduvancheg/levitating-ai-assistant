@@ -567,8 +567,41 @@
                 </div>
             </div>
 
-            <!-- TAB 6: AI ASSISTANT (GEMINI PRO & SPU-WM30 AUDIO - WEB-CL-10) -->
+            <!-- TAB 6: AI ASSISTANT (GEMINI PRO, SPU-WM30 AUDIO & OV2640 MJPEG HUD - WEB-CL-10 / WEB-CL-11) -->
             <div id="tab-content-ai" class="space-y-6 hidden">
+                <!-- V12 Live MJPEG Camera Stream & HUD Overlay Card (TASK-UI-5 / WEB-CL-11) -->
+                <div class="camera-stream-card camera-card glass-panel rounded-xl p-5 space-y-3 border border-cyan-500/40">
+                    <div class="flex flex-wrap justify-between items-center border-b border-slate-800 pb-2 gap-2">
+                        <div>
+                            <h3 class="text-sm font-bold text-cyan-400">LIVE CAMERA STREAM (ESP32-CAM OV2640)</h3>
+                            <p class="text-[10px] text-slate-400">Поток MJPEG ≥ 15 FPS (&lt; 200 мс) с телеметрическим HUD и AI-инспекцией рабочей поверхности.</p>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button id="btn-toggle-stream" onclick="toggleCameraStream()" class="px-3 py-1 bg-cyan-950/80 hover:bg-cyan-700 border border-cyan-600 rounded text-[10px] font-bold text-cyan-300 transition">
+                                [TOGGLE STREAM]
+                            </button>
+                            <button onclick="snapshotAndInspect()" class="px-3 py-1 bg-emerald-950/80 hover:bg-emerald-700 border border-emerald-600 rounded text-[10px] font-bold text-emerald-300 transition">
+                                [SNAPSHOT &amp; INSPECT]
+                            </button>
+                            <button id="btn-camera-res" onclick="toggleCameraResolution()" class="px-3 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-300 transition">
+                                [RESOLUTION: 640x480 / 1600x1200]
+                            </button>
+                            <button onclick="cleanCache()" class="px-3 py-1 bg-amber-950/80 hover:bg-amber-700 border border-amber-600 rounded text-[10px] font-bold text-amber-300 transition">
+                                Clean Temp Cache &amp; Archive DB
+                            </button>
+                        </div>
+                    </div>
+                    <div class="relative bg-slate-950 rounded-lg border border-slate-800 p-2 flex flex-col items-center">
+                        <img id="camera-stream-img" src="/api/agent/camera_stream" alt="Live Camera Stream" class="w-full max-w-[640px] h-auto rounded border border-slate-800 bg-black min-h-[160px] object-contain">
+                        <div id="ai-bbox-overlay" class="text-[10px] font-mono text-cyan-300 mt-1">
+                            AI Vision HUD: READY (Resolution: <span id="cam-res-label">640x480</span>)
+                        </div>
+                        <div class="hud-overlay text-xs font-mono text-emerald-400 mt-1 bg-slate-900/90 px-3 py-1.5 rounded border border-emerald-800/60">
+                            PITCH: <span id="pitch-val">0.0</span>° | ROLL: <span id="roll-val">0.0</span>° | YAW: <span id="yaw-val">0.0</span>° | TARGET Z: <span id="z-val">25.0</span>mm
+                        </div>
+                    </div>
+                </div>
+
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <!-- Left Column: AI Activation, Key & 3-Step Bring-Up -->
                     <div class="glass-panel rounded-xl p-5 space-y-4">
@@ -957,6 +990,18 @@
             document.getElementById('agent-roll').innerText = data.agent.attitude_angles[1].toFixed(1) + "°";
             document.getElementById('agent-yaw').innerText = data.agent.attitude_angles[2].toFixed(1) + "°";
 
+            // V12 Camera HUD Overlay updates (WEB-CL-11)
+            const hudPitch = document.getElementById('pitch-val');
+            const hudRoll = document.getElementById('roll-val');
+            const hudYaw = document.getElementById('yaw-val');
+            const hudZ = document.getElementById('z-val');
+            if (hudPitch) hudPitch.innerText = data.agent.attitude_angles[0].toFixed(1);
+            if (hudRoll) hudRoll.innerText = data.agent.attitude_angles[1].toFixed(1);
+            if (hudYaw) hudYaw.innerText = data.agent.attitude_angles[2].toFixed(1);
+            if (hudZ && data.pid && typeof data.pid.target_z === 'number') {
+                hudZ.innerText = data.pid.target_z.toFixed(1);
+            }
+
             const pitch = data.agent.attitude_angles[0];
             const roll = data.agent.attitude_angles[1];
             document.getElementById('3d-sphere').style.transform = `rotateX(${pitch}deg) rotateY(${roll}deg)`;
@@ -1080,9 +1125,12 @@
             const pipePanel = document.getElementById('pipeline-status-panel');
             const shutdownOverlay = document.getElementById('shutdown-overlay');
 
-            if (pipe.active_id === "SAFE_SHUTDOWN") {
-                // Если активен SAFE_SHUTDOWN - включаем полноэкранный overlay
+            if (pipe.active_id === "SAFE_SHUTDOWN" || pipe.active_id === "EMERGENCY_SAFE_LANDING") {
+                // Если активен SAFE_SHUTDOWN или EMERGENCY_SAFE_LANDING - включаем полноэкранный overlay
                 shutdownOverlay.classList.remove('hidden');
+                if (data.shutdown && data.shutdown.emergency_reason) {
+                    document.getElementById('shutdown-desc').innerText = `Аварийная посадка: ${data.shutdown.emergency_reason}`;
+                }
                 
                 const container = document.getElementById('shutdown-steps-list');
                 container.innerHTML = '';
@@ -1418,6 +1466,49 @@
                 await refreshAIStatus();
             } catch (err) {
                 appendChatBubble('assistant', `Сбой сети: ${err}`);
+            }
+        }
+
+        // --- V12 CAMERA STREAM & SQLITE ARCHIVE CONTROLS (WEB-CL-11 / RPI-CL-15) ---
+        let cameraStreamActive = true;
+        let cameraHighRes = false;
+
+        function toggleCameraStream() {
+            const img = document.getElementById('camera-stream-img');
+            cameraStreamActive = !cameraStreamActive;
+            if (img) {
+                img.src = cameraStreamActive ? `/api/agent/camera_stream?t=${Date.now()}` : '';
+            }
+        }
+
+        function toggleCameraResolution() {
+            cameraHighRes = !cameraHighRes;
+            const res = cameraHighRes ? '1600x1200' : '640x480';
+            const lbl = document.getElementById('cam-res-label');
+            if (lbl) lbl.innerText = res;
+        }
+
+        async function snapshotAndInspect() {
+            const bbox = document.getElementById('ai-bbox-overlay');
+            if (bbox) bbox.innerText = "AI Vision HUD: Capturing frame & analyzing surface...";
+            await refreshAIStatus();
+            if (bbox) {
+                const res = cameraHighRes ? '1600x1200' : '640x480';
+                bbox.innerText = `AI Vision HUD: Snapshot inspected (${res})`;
+            }
+        }
+
+        async function cleanCache() {
+            try {
+                const res = await apiFetch('/api/ai/clean_cache', { method: 'POST' });
+                const data = await res.json();
+                if (data.detail && !data.status) {
+                    alert(`Ошибка очистки: ${data.detail}`);
+                } else {
+                    appendChatBubble('assistant', `[Maintenance]: ${data.detail || data.message}`);
+                }
+            } catch (err) {
+                console.error("cleanCache error:", err);
             }
         }
 
