@@ -10,7 +10,10 @@ Traceability: Each test maps 1:1 to the scenario ID in the Traceability Matrix.
 import asyncio
 import json
 import math
+import sqlite3
 import tempfile
+import time
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -22,6 +25,7 @@ from brain_rpi5.src.main_server import (
     CalibrationState,
     execute_takeoff_pipeline,
     execute_landing_pipeline,
+    execute_emergency_landing_pipeline,
     execute_helix_pipeline,
     execute_bist_pipeline,
     execute_shutdown_pipeline,
@@ -31,6 +35,7 @@ from brain_rpi5.src.main_server import (
     tool_inspect_surface,
     tool_clear_temp_cache,
     trigger_nod_gesture,
+    mjpeg_frame_generator,
     AIHistoryDB,
     AIConfigManager,
     GeminiAIManager,
@@ -55,6 +60,9 @@ def reset_state():
     system_state.coil_temp_model = 25.0
     system_state.thermal_throttling = False
     system_state.agent_battery = 100.0
+    system_state.agent_wifi_last_seen = time.perf_counter()
+    system_state.emergency_reason = None
+    system_state.maintenance_logs = []
     system_state.agent_pitch = 0.0
     system_state.agent_roll = 0.0
     system_state.agent_relay_status = "Connected"
@@ -602,3 +610,83 @@ async def test_full_shutdown_pipeline():
     assert system_state.pwm_channels == [0, 0, 0, 0, 0]
     assert system_state.safe_to_unplug is True
     assert system_state.bist_unlocked is False
+
+
+# =====================================================================
+# V12 E2E SCENARIOS: TASK-AI-5, TASK-UI-5, TASK-AI-6
+# =====================================================================
+@pytest.mark.asyncio
+async def test_v12_touch1_emergency_safe_landing_e2e():
+    """TASK-AI-5 (RPI-CL-14): Graceful emergency safe landing on Wi-Fi loss / critical battery."""
+    system_state.target_z = 5.0
+    system_state.pwm_channels = [60, 60, 60, 60, 60]
+    system_state.slew_rate_limit = 10
+
+    await execute_emergency_landing_pipeline("Wi-Fi Heartbeat Loss (>500ms)")
+
+    assert system_state.target_z == 0.0
+    assert system_state.pwm_channels == [0, 0, 0, 0, 0]
+    assert system_state.safe_to_unplug is True
+    assert system_state.emergency_reason == "Wi-Fi Heartbeat Loss (>500ms)"
+
+
+@pytest.mark.asyncio
+async def test_v12_touch3_mjpeg_stream_non_blocking_e2e():
+    """TASK-UI-5 (WEB-CL-11): MJPEG stream generator produces valid JPEG multipart frames."""
+    gen = mjpeg_frame_generator(max_frames=2)
+    chunk = await gen.__anext__()
+    await gen.aclose()
+
+    assert b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" in chunk
+    assert b"\xff\xd8" in chunk and b"\xff\xd9" in chunk
+
+
+@pytest.mark.asyncio
+async def test_v12_touch4_sqlite_auto_archive_e2e(tmp_path):
+    """TASK-AI-6 (RPI-CL-15): Oversized (>50 MB) ai_history.db is archived to ZIP and vacuumed (<10 MB)."""
+    import brain_rpi5.src.main_server as ms
+    orig_cache = ms.TEMP_CACHE_DIR
+    orig_db = ms.AI_HISTORY_DB_PATH
+    orig_db_alias = ms.DB_PATH
+
+    try:
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        db_file = tmp_path / "ai_history.db"
+        ms.TEMP_CACHE_DIR = cache_dir
+        ms.AI_HISTORY_DB_PATH = db_file
+        ms.DB_PATH = str(db_file)
+
+        conn = sqlite3.connect(str(db_file))
+        c = conn.cursor()
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS messages "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, content TEXT NOT NULL, timestamp TEXT NOT NULL)"
+        )
+        blob = "A" * 50_000
+        rows = [("user", f"turn-{i:04d} {blob}", "2026-10-28T12:00:00Z") for i in range(1100)]
+        c.executemany("INSERT INTO messages (role, content, timestamp) VALUES (?, ?, ?)", rows)
+        conn.commit()
+        conn.close()
+
+        # Update the retained 1000 rows to realistic turn lengths; free pages still keep file >50MB before VACUUM
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("UPDATE messages SET content = 'short-turn-' || id WHERE id > 100")
+        conn.commit()
+        conn.close()
+        assert db_file.stat().st_size > 50 * 1024 * 1024
+
+        res = await tool_clear_temp_cache()
+        assert "Archived DB to" in res
+        assert any("DB Archived:" in m for m in system_state.maintenance_logs)
+        assert db_file.stat().st_size < 10 * 1024 * 1024
+
+        archives = list(tmp_path.glob("history_archive_*.zip"))
+        assert len(archives) == 1
+        with zipfile.ZipFile(archives[0], "r") as zf:
+            assert "ai_history_backup.db" in zf.namelist()
+    finally:
+        ms.TEMP_CACHE_DIR = orig_cache
+        ms.AI_HISTORY_DB_PATH = orig_db
+        ms.DB_PATH = orig_db_alias
+

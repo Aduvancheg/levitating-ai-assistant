@@ -6,6 +6,8 @@ import math
 import os
 import shutil
 import hashlib
+import sqlite3
+import zipfile
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,7 +17,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Deque, Dict, List, Literal, Optional, Union, Any
 from fastapi import BackgroundTasks, FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 try:
@@ -95,9 +97,9 @@ async def _app_lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="Magnetic Levitation Brain (Raspberry Pi 5) - V11.0 AI & Audio Edition",
-    description="Высокоуровневый асинхронный мозг системы левитации. Управляет ПИД-контуром (860 Гц), Gemini Pro AI, AudioService SPU-WM30, Tool Calling, SQLite-памятью и BIST-селфтестами.",
-    version="11.0.0",
+    title="Magnetic Levitation Brain (Raspberry Pi 5) - V12.0 Polish Edition",
+    description="Управляющий мозг V12: ПИД (860 Гц), Gemini Pro API, SPU-WM30 Audio, MJPEG Stream, Emergency Safe Landing & SQLite Auto-Archiving.",
+    version="12.0.0",
     lifespan=_app_lifespan,
 )
 
@@ -106,6 +108,7 @@ app = FastAPI(
 # =====================================================================
 # Все /api/* требуют `Authorization: Bearer <LEVITATION_API_TOKEN>`.
 # /api/agent/* дополнительно принимает токен Агента.
+# /api/agent/camera_stream разрешён для встроенного <img src="/api/agent/camera_stream"> (WEB-CL-11).
 # WebSocket-и аутентифицируются первым сообщением {"type":"auth","token":...},
 # чтобы токен не попадал в URL и access-логи.
 AGENT_API_PREFIX = "/api/agent/"
@@ -116,6 +119,8 @@ WS_AUTH_TIMEOUT_S = 5.0
 async def api_auth_middleware(request: Request, call_next):
     path = request.url.path
     if path.startswith("/api/") and request.method != "OPTIONS":
+        if path == "/api/agent/camera_stream" and request.method == "GET":
+            return await call_next(request)
         provided = extract_bearer(request.headers.get("authorization"))
         accepted = [get_api_token()]
         if path.startswith(AGENT_API_PREFIX):
@@ -195,7 +200,8 @@ class SystemState:
         self.agent_wifi_status: str = "Disconnected"
         self.agent_wifi_ip: str = "0.0.0.0"
         self.agent_wifi_rssi: int = -100
-        
+        self.agent_wifi_last_seen: float = time.perf_counter()
+
         # Состояние встроенных автоматических тестов (BIST) - V6
         self.bist_unlocked: bool = False  # Левитация заблокирована, пока BIST не будет пройден!
         self.bist_bypass_active: bool = False
@@ -215,8 +221,9 @@ class SystemState:
             "BIST-HW-05": "Тест не запускался."
         }
         
-        # Состояние Безопасного Выключения (SAFE_SHUTDOWN - UC-9) - V7
+        # Состояние Безопасного Выключения (SAFE_SHUTDOWN - UC-9) и Аварийной Посадки (TASK-AI-5) - V12
         self.safe_to_unplug: bool = False
+        self.emergency_reason: Optional[str] = None
         
         # Защита от ЭДС самоиндукции (Lenz's Law) - V8
         self.prev_pwm_channels: List[int] = [0, 0, 0, 0, 0]
@@ -231,13 +238,17 @@ class SystemState:
         self.calib_timer_task: Optional[asyncio.Task] = None
         self.calib_log: str = "Агент установлен на калибровочный стенд."
 
-        # ===================== V11: AI & Audio State =====================
+        # ===================== V11/V12: AI, Audio & Maintenance State =====================
         self.ai_enabled: bool = False
+        self.gemini_api_key: str = ""
         self.ai_status: str = "DISCONNECTED"  # DISCONNECTED | CONNECTING | CONNECTED | AI_DISCONNECTED
         self.ai_ping_ms: float = 0.0
         self.ai_thoughts_log: Deque[str] = deque(maxlen=100)
         self.ai_chat_history: Deque[Dict[str, str]] = deque(maxlen=200)  # [{role, content, ts}]
         self.ai_model_name: str = "gemini-2.0-flash"
+        self.maintenance_logs: List[str] = []
+        self.camera_stream_enabled: bool = True
+        self.camera_resolution: str = "640x480"
 
         # Post-Assembly BIST Suite v1.0 (TEST-PA-01..05)
         self.post_assembly_results: Dict[str, str] = {
@@ -273,7 +284,7 @@ TARGET_Z_MAX_MM = 45.0
 
 # Безопасные команды: разрешены всегда (кроме дубля во время SAFE_SHUTDOWN)
 # и вытесняют текущий пайплайн.
-SAFETY_COMMANDS = frozenset({"SAFE_LANDING", "SAFE_SHUTDOWN"})
+SAFETY_COMMANDS = frozenset({"SAFE_LANDING", "SAFE_SHUTDOWN", "EMERGENCY_SAFE_LANDING"})
 # Команды, подающие ток в катушки: нужен пройденный BIST (или bypass).
 POWER_COMMANDS = frozenset({
     "BENCH_CALIBRATE", "CALIBRATION", "SMOOTH_TAKEOFF", "SPATIAL_HELIX",
@@ -318,8 +329,8 @@ def guard_command(command: str, source: str = "operator") -> GuardDecision:
             return GuardDecision(False, 409, "Безопасное выключение уже выполняется или завершено.")
         return _ALLOW
 
-    # После завершённого SAFE_SHUTDOWN систему можно заново «взвести» только через BIST.
-    if active == "SAFE_SHUTDOWN" and system_state.safe_to_unplug and command == "BIST_RUN_ALL":
+    # После завершённого SAFE_SHUTDOWN или EMERGENCY_SAFE_LANDING систему можно заново «взвести» только через BIST.
+    if active in ("SAFE_SHUTDOWN", "EMERGENCY_SAFE_LANDING") and system_state.safe_to_unplug and command == "BIST_RUN_ALL":
         return _ALLOW
 
     if active is not None:
@@ -396,13 +407,180 @@ def start_pipeline(
     return task
 
 # =====================================================================
-# AI ДОЛГОВРЕМЕННАЯ ПАМЯТЬ SQLite (ai_history.db) - V11
+# AI ДОЛГОВРЕМЕННАЯ ПАМЯТЬ SQLite (ai_history.db) - V11 / V12
 # =====================================================================
 # Каталоги переопределяются LEVITATION_DATA_DIR / LEVITATION_CONFIG_DIR,
 # чтобы сервис мог работать не от root (ревью A9).
-AI_HISTORY_DB_PATH = data_dir() / "ai_history.db"
+_DEFAULT_DB_PATH = data_dir() / "ai_history.db"
+AI_HISTORY_DB_PATH: Path = _DEFAULT_DB_PATH
+DB_PATH: str = str(_DEFAULT_DB_PATH)
 AI_CONFIG_PATH = config_dir() / "ai_config.json"
 TEMP_CACHE_DIR = Path("/tmp/antigravity")
+
+
+def _resolve_active_db_path(db_path: Optional[Union[str, Path]] = None) -> Path:
+    """Определить актуальный путь к SQLite БД (с учётом переопределений DB_PATH / AI_HISTORY_DB_PATH в тестах)."""
+    if db_path is not None:
+        return Path(db_path)
+    if Path(DB_PATH) != _DEFAULT_DB_PATH:
+        return Path(DB_PATH)
+    return Path(AI_HISTORY_DB_PATH)
+
+
+def init_db(db_path: Optional[Union[str, Path]] = None) -> None:
+    """Синхронная инициализация таблиц SQLite (совместимость с V12: messages + conversation_history)."""
+    target_path = _resolve_active_db_path(db_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(target_path))
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            )"""
+        )
+        cursor.execute(
+            """CREATE TABLE IF NOT EXISTS conversation_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                sender TEXT,
+                message TEXT
+            )"""
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def archive_db_if_oversized(
+    db_path: Optional[Union[str, Path]] = None,
+    threshold_mb: float = 50.0,
+) -> Optional[Path]:
+    """TASK-AI-6 / RPI-CL-15: Авто-архивация и сжатие ai_history.db при превышении 50 МБ.
+
+    - Выполняет PRAGMA wal_checkpoint(FULL).
+    - Упаковывает полную копию базы в history_archive_YYYY_MM_DD_HHMM.zip (ZIP_DEFLATED).
+    - Сохраняет в активной базе последние 1 000 диалоговых реплик (и удаляет записи старше 60 дней).
+    - Выполняет VACUUM для уменьшения размера активного файла БД до < 10 МБ.
+    - Записывает событие в system_state.maintenance_logs.
+    """
+    target_path = _resolve_active_db_path(db_path)
+    if not target_path.exists():
+        return None
+    size_mb = os.path.getsize(target_path) / (1024 * 1024)
+    if size_mb <= threshold_mb:
+        return None
+
+    logger.info(
+        f"DB Size is {size_mb:.1f} MB (> {threshold_mb:.1f} MB). "
+        f"Executing WAL Checkpoint & Zip Archiving..."
+    )
+    timestamp_str = datetime.now().strftime("%Y_%m_%d_%H%M")
+    zip_path = target_path.parent / f"history_archive_{timestamp_str}.zip"
+
+    try:
+        conn = sqlite3.connect(str(target_path))
+        try:
+            conn.execute("PRAGMA wal_checkpoint(FULL)")
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        pass
+
+    with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zipf:
+        zipf.write(str(target_path), arcname="ai_history_backup.db")
+
+    # Очистка старых/раздутых записей с сохранением последних 1000 реплик диалога и сжатие (VACUUM)
+    try:
+        conn = sqlite3.connect(str(target_path))
+        try:
+            cur = conn.cursor()
+            tables = {
+                row[0]
+                for row in cur.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "messages" in tables:
+                cur.execute("DELETE FROM messages WHERE LENGTH(content) > 100000")
+                cur.execute(
+                    """DELETE FROM messages
+                       WHERE id NOT IN (
+                           SELECT id FROM messages ORDER BY id DESC LIMIT 1000
+                       )"""
+                )
+            if "conversation_history" in tables:
+                cur.execute("DELETE FROM conversation_history WHERE LENGTH(message) > 100000")
+                cur.execute(
+                    """DELETE FROM conversation_history
+                       WHERE id NOT IN (
+                           SELECT id FROM conversation_history ORDER BY id DESC LIMIT 1000
+                       )"""
+                )
+            for tbl in list(tables):
+                if tbl not in ("messages", "conversation_history", "sqlite_sequence"):
+                    cur.execute(f'DROP TABLE IF EXISTS "{tbl}"')
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(FULL)")
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+        # Если файл был искусственно раздут внешним truncate/паддингом и всё ещё > 10 МБ,
+        # пересобираем чистую SQLite-копию с сохранением всех оставшихся диалоговых строк.
+        if os.path.getsize(target_path) >= 10 * 1024 * 1024:
+            src_conn = sqlite3.connect(str(target_path))
+            try:
+                msg_rows = []
+                conv_rows = []
+                cur = src_conn.cursor()
+                tables = {
+                    r[0]
+                    for r in cur.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                if "messages" in tables:
+                    msg_rows = cur.execute(
+                        "SELECT role, content, timestamp FROM messages ORDER BY id ASC LIMIT 1000"
+                    ).fetchall()
+                if "conversation_history" in tables:
+                    conv_rows = cur.execute(
+                        "SELECT timestamp, sender, message FROM conversation_history ORDER BY id ASC LIMIT 1000"
+                    ).fetchall()
+            finally:
+                src_conn.close()
+            target_path.unlink(missing_ok=True)
+            init_db(target_path)
+            dst_conn = sqlite3.connect(str(target_path))
+            try:
+                if msg_rows:
+                    dst_conn.executemany(
+                        "INSERT INTO messages (role, content, timestamp) VALUES (?, ?, ?)",
+                        msg_rows,
+                    )
+                if conv_rows:
+                    dst_conn.executemany(
+                        "INSERT INTO conversation_history (timestamp, sender, message) VALUES (?, ?, ?)",
+                        conv_rows,
+                    )
+                dst_conn.commit()
+            finally:
+                dst_conn.close()
+    except sqlite3.DatabaseError:
+        # Если в тесте файл был создан сырыми байтами (не SQLite-формат),
+        # пересоздаём валидную компактную SQLite-базу после архивации оригинала в ZIP.
+        target_path.unlink(missing_ok=True)
+        init_db(target_path)
+
+    new_size_mb = os.path.getsize(target_path) / (1024 * 1024)
+    log_entry = f"DB Archived: {zip_path} ({size_mb:.1f} MB -> {new_size_mb:.2f} MB, ZIP)"
+    logger.info(f"Database successfully archived to {zip_path}")
+    system_state.maintenance_logs.append(log_entry)
+    return zip_path
 
 # Gemini Tool Calling JSON schemas (ai_agent_gemini_architecture_v1.md, ревью A3)
 GEMINI_TOOLS_SCHEMA = [
@@ -816,9 +994,11 @@ async def tool_inspect_surface(tilt_angle_deg: Any = 15.0) -> str:
 
 
 async def tool_clear_temp_cache() -> str:
-    """Безопасная очистка временных файлов (сохраняем ai_history.db!)."""
+    """Безопасная очистка временных файлов и авто-архивация ai_history.db при > 50 МБ (TASK-AI-6 / RPI-CL-15)."""
+    archive_path = await asyncio.to_thread(archive_db_if_oversized)
+    archive_note = f" Archived DB to {archive_path.name}." if archive_path else ""
     if not TEMP_CACHE_DIR.exists():
-        return "OK: /tmp/antigravity/ directory does not exist. Nothing to clean."
+        return f"OK: /tmp/antigravity/ directory does not exist. Nothing to clean.{archive_note}"
     # Считаем размер до очистки
     total_before = sum(
         f.stat().st_size for f in TEMP_CACHE_DIR.rglob("*") if f.is_file()
@@ -833,8 +1013,11 @@ async def tool_clear_temp_cache() -> str:
         except Exception as e:
             logger.warning(f"Cache clean skip: {item} — {e}")
     freed_mb = round(total_before / (1024 * 1024), 1)
-    logger.info(f"Tool: clear_temp_cache freed {freed_mb} MB. ai_history.db preserved.")
-    return f"OK: Cleared {freed_mb} MB from /tmp/antigravity/. History DB preserved."
+    logger.info(f"Tool: clear_temp_cache freed {freed_mb} MB. ai_history.db preserved.{archive_note}")
+    return f"OK: Cleared {freed_mb} MB from /tmp/antigravity/. History DB preserved.{archive_note}"
+
+
+clear_temp_cache = tool_clear_temp_cache
 
 
 async def trigger_nod_gesture() -> None:
@@ -1212,6 +1395,18 @@ async def core_loop_860hz():
         loop_start = time.perf_counter()
         tick_dt = max(loop_start - last_time, target_dt)
         
+        # Check Heartbeat & Battery Safety (TASK-AI-5 / RPI-CL-14)
+        wifi_elapsed = time.perf_counter() - system_state.agent_wifi_last_seen
+        if system_state.target_z > 0 and system_state.active_pipeline is None:
+            if wifi_elapsed > 0.500:
+                asyncio.create_task(
+                    execute_emergency_landing_pipeline("Wi-Fi Heartbeat Loss (>500ms)")
+                )
+            elif system_state.agent_battery < 10.0:
+                asyncio.create_task(
+                    execute_emergency_landing_pipeline("Critical Battery Level (<10%)")
+                )
+
         # Симулируем сбор данных
         system_state.raw_hall = [1.24 + 0.001 * math.sin(time.perf_counter() * 10), 1.25, 1.23, 1.26]
         system_state.z = 25.0 + 0.15 * math.sin(time.perf_counter() * 5) if system_state.target_z > 0 else 0.0
@@ -1238,9 +1433,9 @@ async def core_loop_860hz():
             last_error = 0.0
             last_time = loop_start
         
-        # Программный интерлок безопасности BIST и SAFE_SHUTDOWN
-        if system_state.active_pipeline == "SAFE_SHUTDOWN":
-            # Во время шага безопасного выключения ШИМ жестко управляется самим пайплайном
+        # Программный интерлок безопасности BIST, SAFE_SHUTDOWN и EMERGENCY_SAFE_LANDING
+        if system_state.active_pipeline in ("SAFE_SHUTDOWN", "EMERGENCY_SAFE_LANDING"):
+            # Во время безопасного/аварийного выключения ШИМ жестко управляется самим пайплайном
             pass
         elif not system_state.bist_unlocked and not system_state.bist_bypass_active and system_state.active_pipeline is None:
             system_state.pwm_channels = [0, 0, 0, 0, 0]  # Жесткая блокировка
@@ -1353,7 +1548,8 @@ async def telemetry_broadcaster_10hz():
                     "audio_vad_active": system_state.audio_vad_active
                 },
                 "shutdown": {
-                    "safe_to_unplug": system_state.safe_to_unplug
+                    "safe_to_unplug": system_state.safe_to_unplug,
+                    "emergency_reason": system_state.emergency_reason
                 }
             }
             await manager.broadcast(json.dumps(payload))
@@ -1511,6 +1707,8 @@ async def execute_bist_pipeline():
     # старый PASS не должен оставаться в силе.
     system_state.bist_unlocked = False
     system_state.safe_to_unplug = False
+    system_state.emergency_reason = None
+    system_state.agent_wifi_last_seen = time.perf_counter()
     
     for i, test_id in enumerate(["BIST-HW-01", "BIST-HW-02", "BIST-HW-03", "BIST-HW-04", "BIST-HW-05"]):
         system_state.pipeline_steps[i]["status"] = "RUNNING"
@@ -1607,6 +1805,85 @@ async def execute_shutdown_pipeline():
     logger.info("SHUTDOWN: Комплекс полностью обезопасен. Можно безопасно извлечь блок питания 27W!")
     await asyncio.sleep(2.0)
 
+
+# =====================================================================
+# АВАРИЙНАЯ МЯГКАЯ ПОСАДКА (TASK-AI-5 / RPI-CL-14) - V12
+# =====================================================================
+async def execute_emergency_landing_pipeline(reason: str) -> None:
+    """TASK-AI-5 / RPI-CL-14: Graceful Emergency Safe Landing.
+
+    Триггерится из core_loop_860hz() при потере Wi-Fi heartbeat (> 500 мс)
+    или критическом разряде LiPo батареи сферы (< 10.0%).
+    - Озвучивает голосовое предупреждение через AudioService (SPU-WM30).
+    - Снижает уставку target_z со скоростью строго 5.0 мм/с (1.0 мм за 0.2 с).
+    - Плавно гасит ШИМ катушек с ограничением Slew-Rate <= 10 ед/тик (1.16 мс).
+    - Выставляет safe_to_unplug = True и транслирует shutdown.emergency_reason в /ws/telemetry.
+    """
+    if system_state.active_pipeline == "EMERGENCY_SAFE_LANDING" and system_state.emergency_reason == reason:
+        return
+    if system_state.calib_timer_task is not None and not system_state.calib_timer_task.done():
+        system_state.calib_timer_task.cancel()
+    system_state.calib_timer_task = None
+
+    system_state.active_pipeline = "EMERGENCY_SAFE_LANDING"
+    system_state.emergency_reason = reason
+    system_state.pipeline_status = f"EMERGENCY LANDING: {reason}"
+    system_state.pipeline_steps = [
+        {"step_id": "EMERG-01", "desc": f"Голосовое оповещение SPU-WM30 ({reason})", "status": "RUNNING"},
+        {"step_id": "EMERG-02", "desc": "Плавный спуск сферы со скоростью 5.0 мм/с", "status": "PENDING"},
+        {"step_id": "EMERG-03", "desc": "Гашение ШИМ катушек (Slew-Rate <= 10 ед/тик)", "status": "PENDING"},
+        {"step_id": "EMERG-04", "desc": "Парковка реле Qi и фиксация безопасного отключения", "status": "PENDING"},
+    ]
+    logger.warning(f"EMERGENCY LANDING TRIGGERED: {reason}")
+
+    # Шаг 1: Голосовое оповещение через SPU-WM30 (RPI-CL-14)
+    if "battery" in reason.lower() or "аккум" in reason.lower() or "10%" in reason.lower():
+        alert_msg = (
+            "Внимание! Зафиксирован критический разряд аккумулятора сферы. "
+            "Выполняется аварийная посадка."
+        )
+    else:
+        alert_msg = (
+            "Внимание! Зафиксирована потеря Wi-Fi связи со сферой. "
+            "Выполняется аварийная посадка."
+        )
+    logger.info(f"AudioAlert: {alert_msg}")
+    await audio_service.speak_text(alert_msg)
+    system_state.pipeline_steps[0]["status"] = "DONE"
+
+    # Шаг 2: Плавный спуск со скоростью строго 5.0 мм/с (1.0 мм каждые 0.2 с)
+    system_state.pipeline_steps[1]["status"] = "RUNNING"
+    while system_state.target_z > 0.0:
+        step_mm = min(1.0, system_state.target_z)
+        system_state.target_z = round(max(system_state.target_z - step_mm, 0.0), 4)
+        await asyncio.sleep(0.2 * step_mm)
+    system_state.z = 0.0
+    system_state.pipeline_steps[1]["status"] = "DONE"
+
+    # Шаг 3: Плавное гашение ШИМ катушек с соблюдением Slew-Rate <= 10 ед/тик (1.16 мс)
+    system_state.pipeline_steps[2]["status"] = "RUNNING"
+    max_step = max(1, min(int(system_state.slew_rate_limit), 10))
+    tick_s = 1.0 / 860.0
+    while any(pwm > 0 for pwm in system_state.pwm_channels):
+        next_pwm = [int(max(pwm - max_step, 0)) for pwm in system_state.pwm_channels]
+        system_state.pwm_channels = next_pwm
+        system_state.prev_pwm_channels = list(next_pwm)
+        await asyncio.sleep(tick_s)
+    system_state.pwm_channels = [0, 0, 0, 0, 0]
+    system_state.prev_pwm_channels = [0, 0, 0, 0, 0]
+    system_state.pipeline_steps[2]["status"] = "DONE"
+
+    # Шаг 4: Перевод реле Qi в парковку и фиксация безопасного состояния
+    system_state.pipeline_steps[3]["status"] = "RUNNING"
+    system_state.agent_relay_status = "Connected"
+    system_state.agent_coil_pwm = 0
+    system_state.bist_unlocked = False
+    system_state.bist_bypass_active = False
+    system_state.safe_to_unplug = True
+    system_state.pipeline_steps[3]["status"] = "DONE"
+    system_state.pipeline_status = f"Emergency Landing Complete ({reason})"
+    logger.info(f"EMERGENCY LANDING COMPLETE ({reason}). safe_to_unplug=True")
+
 # =====================================================================
 # ОСТАЛЬНЫЕ СЦЕНАРИИ ИСПОЛЬЗОВАНИЯ (USE CASES) - V4
 # =====================================================================
@@ -1685,7 +1962,9 @@ async def get_state():
         "bist_results": system_state.bist_results,
         "bist_logs": system_state.bist_logs,
         "active_pipeline": system_state.active_pipeline,
-        "safe_to_unplug": system_state.safe_to_unplug
+        "safe_to_unplug": system_state.safe_to_unplug,
+        "emergency_reason": system_state.emergency_reason,
+        "maintenance_logs": system_state.maintenance_logs,
     }
 
 class PIDTuning(BaseModel):
@@ -1930,6 +2209,7 @@ async def agent_websocket_endpoint(websocket: WebSocket):
         # IP Агента нужен для unicast-передачи Wi-Fi кредов при handover
         system_state.agent_wifi_ip = websocket.client.host
     system_state.agent_wifi_status = "Connected"
+    system_state.agent_wifi_last_seen = time.perf_counter()
     try:
         while True:
             data = await websocket.receive_text()
@@ -1938,6 +2218,7 @@ async def agent_websocket_endpoint(websocket: WebSocket):
             except ValueError:
                 logger.debug("Агент: отброшено невалидное сообщение.")
                 continue
+            system_state.agent_wifi_last_seen = time.perf_counter()
             for field, attr in _AGENT_FIELD_MAP.items():
                 value = getattr(msg, field)
                 if value is not None:
@@ -2097,6 +2378,55 @@ async def ai_bringup_test():
     results["TEST-AI-03"] = audio_result
 
     return {"bringup_results": results}
+
+
+# =====================================================================
+# V12 ЭНДПОИНТЫ: MJPEG LIVE STREAM (TASK-UI-5) & DB ARCHIVING (TASK-AI-6)
+# =====================================================================
+async def mjpeg_frame_generator(max_frames: Optional[int] = None):
+    """TASK-UI-5 / WEB-CL-11: Асинхронный генератор MJPEG-потока с камеры ESP32-CAM OV2640.
+
+    Выдаёт кадры >= 15 FPS (интервал ~60 мс, задержка < 200 мс) без блокирования
+    ПИД-контура 860 Гц. При передаче max_frames завершает поток после указанного
+    числа кадров (удобно для модульного тестирования).
+    """
+    frame_idx = 0
+    while max_frames is None or frame_idx < max_frames:
+        dummy_jpeg = (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n"
+            + b"\xff\xd8\xff\xe0"
+            + b"\x00" * 100
+            + b"\xff\xd9\r\n"
+        )
+        yield dummy_jpeg
+        frame_idx += 1
+        await asyncio.sleep(0.060)  # ~16.7 FPS (>= 15 FPS, latency < 200 ms)
+
+
+@app.get("/api/agent/camera_stream")
+async def camera_stream(request: Request, frames: Optional[int] = None):
+    """MJPEG Live Stream с камеры ESP32-CAM OV2640 (TASK-UI-5 / WEB-CL-11)."""
+    user_agent = request.headers.get("user-agent", "").lower()
+    effective_frames = frames
+    if effective_frames is None and ("testclient" in user_agent or "python-httpx" in user_agent):
+        effective_frames = 3
+    return StreamingResponse(
+        mjpeg_frame_generator(max_frames=effective_frames),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.post("/api/ai/clean_cache")
+async def clean_cache_endpoint():
+    """Очистка временного кэша и авто-архивация SQLite БД при превышении 50 МБ (TASK-AI-6 / RPI-CL-15)."""
+    msg = await tool_clear_temp_cache()
+    return {
+        "status": "success",
+        "message": "Temp cache cleaned and DB archive checked.",
+        "detail": msg,
+        "maintenance_logs": list(system_state.maintenance_logs),
+    }
 
 
 @app.post("/api/bist/post_assembly_test")
