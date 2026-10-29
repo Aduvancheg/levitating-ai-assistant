@@ -96,6 +96,33 @@ static void wdt_init(void) {}
 static void wdt_feed(void) {}
 #endif
 
+/* ---- Battery state-of-charge calculation -------------------------- */
+#ifndef BATTERY_ADC_PIN
+#define BATTERY_ADC_PIN 35  /* ADC1_CH7, input-only on ESP32 */
+#endif
+
+/**
+ * LiPo battery state-of-charge calculation:
+ * Reads ADC voltage through 2:1 resistive divider.
+ * Voltage curve: 3.3V (0%) to 4.2V (100%).
+ * If ADC pin is unconfigured/floating (reads <= 0), returns 100.0f default.
+ */
+static float read_battery_percentage(void) {
+#if defined(ESP32)
+    int raw = analogRead(BATTERY_ADC_PIN);
+    if (raw <= 0) {
+        return 100.0f;
+    }
+    // 12-bit ADC (0..4095) with 2:1 divider and 3.3V full scale
+    float v_bat = (static_cast<float>(raw) / 4095.0f) * 3.3f * 2.0f;
+    if (v_bat <= 3.3f) return 0.0f;
+    if (v_bat >= 4.2f) return 100.0f;
+    return (v_bat - 3.3f) / (4.2f - 3.3f) * 100.0f;
+#else
+    return 100.0f;
+#endif
+}
+
 /* ---- Arduino entry points ---------------------------------------- */
 
 void setup() {
@@ -237,8 +264,9 @@ void loop() {
             last_telem_ms = now;
             char telem_buf[160];
             int8_t rssi = (WiFi.status() == WL_CONNECTED) ? (int8_t)WiFi.RSSI() : -100;
+            float bat_pct = read_battery_percentage();
             if (bno085_format_telemetry_json(&latest_orientation,
-                                             100.0f,
+                                             bat_pct,
                                              coil_state.current_duty,
                                              coil_state.qi_isolated,
                                              rssi,

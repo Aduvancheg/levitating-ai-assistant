@@ -17,8 +17,8 @@ async def test_takeoff_scenario():
     # Run the takeoff pipeline
     task = asyncio.create_task(execute_takeoff_pipeline())
     
-    # Let it yield
-    await asyncio.sleep(0.5)
+    # Let it yield into the pipeline
+    await asyncio.sleep(0.02)
     
     assert system_state.active_pipeline == "SMOOTH_TAKEOFF"
     
@@ -41,8 +41,8 @@ async def test_safe_landing_scenario():
     
     task = asyncio.create_task(execute_landing_pipeline())
     
-    # Yield
-    await asyncio.sleep(0.5)
+    # Yield into the pipeline
+    await asyncio.sleep(0.02)
     
     assert system_state.active_pipeline == "SAFE_LANDING"
     

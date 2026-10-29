@@ -82,6 +82,19 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Brain_RPi5")
 
+# Конфигурация портов и масштабирования времени (ревью N-F2, N-H3)
+AGENT_UDP_PORT = int(os.environ.get("LEVITATION_AGENT_UDP_PORT", "4211"))
+PIPELINE_TIME_SCALE = float(os.environ.get("LEVITATION_PIPELINE_TIME_SCALE", "1.0"))
+
+
+async def pipeline_sleep(seconds: float) -> None:
+    """Неблокирующая задержка пайплайна с учётом масштабирования PIPELINE_TIME_SCALE (N-H3)."""
+    scaled = seconds * PIPELINE_TIME_SCALE
+    if scaled > 0:
+        await asyncio.sleep(scaled)
+    else:
+        await asyncio.sleep(0)
+
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
@@ -89,9 +102,24 @@ async def _app_lifespan(_app: FastAPI):
     loop_task = asyncio.create_task(core_loop_860hz())
     ws_task = asyncio.create_task(telemetry_broadcaster_10hz())
     await startup_event(spawn_background_loops=False)
+
+    udp_transport = None
+    if os.environ.get("LEVITATION_ENABLE_UDP", "1").lower() not in ("0", "false", "no"):
+        try:
+            loop = asyncio.get_running_loop()
+            udp_transport, _ = await loop.create_datagram_endpoint(
+                lambda: AgentTelemetryUDPProtocol(),
+                local_addr=("0.0.0.0", AGENT_UDP_PORT),
+            )
+            logger.info("Agent UDP telemetry server bound to port %d", AGENT_UDP_PORT)
+        except Exception as exc:
+            logger.warning("Could not bind Agent UDP port %d: %s", AGENT_UDP_PORT, exc)
+
     try:
         yield
     finally:
+        if udp_transport is not None:
+            udp_transport.close()
         for task in (loop_task, ws_task):
             task.cancel()
 
@@ -1177,12 +1205,12 @@ async def run_post_assembly_test(test_id: str) -> bool:
     if test_id == "TEST-PA-01":
         # Channel Isolation: PWM pulse на каждый канал, проверка dV >= 0.12V
         logger.info("POST-ASSEMBLY: TEST-PA-01 Channel Isolation запущен...")
-        await asyncio.sleep(1.0)
+        await pipeline_sleep(1.0)
         # Симуляция: каждый активный канал дает dV = 0.28V, остальные < 0.03V
         for ch in range(4):
             system_state.pwm_channels = [0] * 5
             system_state.pwm_channels[ch] = 200
-            await asyncio.sleep(0.2)
+            await pipeline_sleep(0.2)
         system_state.pwm_channels = [0] * 5
         system_state.post_assembly_results[test_id] = "PASS"
         system_state.post_assembly_logs[test_id] = (
@@ -1194,7 +1222,7 @@ async def run_post_assembly_test(test_id: str) -> bool:
     elif test_id == "TEST-PA-02":
         # Winding Symmetry & Polarity: все катушки North, разброс <= 50mV
         logger.info("POST-ASSEMBLY: TEST-PA-02 Winding Symmetry запущен...")
-        await asyncio.sleep(1.0)
+        await pipeline_sleep(1.0)
         delta_v_list = [0.29, 0.31, 0.28, 0.30, 0.29]
         all_north = all(dv > 0 for dv in delta_v_list)
         spread = max(delta_v_list) - min(delta_v_list)
@@ -1214,7 +1242,7 @@ async def run_post_assembly_test(test_id: str) -> bool:
     elif test_id == "TEST-PA-03":
         # ToF Optical Path Clearance: min >= 15mm, std <= 3mm
         logger.info("POST-ASSEMBLY: TEST-PA-03 ToF Optical Path запущен...")
-        await asyncio.sleep(0.8)
+        await pipeline_sleep(0.8)
         grid_mm = [25.0 + 0.5 * (i % 8) for i in range(64)]
         min_val = min(grid_mm)
         std_val = (sum((x - sum(grid_mm)/64)**2 for x in grid_mm) / 64) ** 0.5
@@ -1232,7 +1260,7 @@ async def run_post_assembly_test(test_id: str) -> bool:
         # EMC Ground Bounce Stress: RMS <= 12mV at PWM=460
         logger.info("POST-ASSEMBLY: TEST-PA-04 EMC Ground Bounce запущен...")
         system_state.pwm_channels = [460] * 5
-        await asyncio.sleep(0.5)
+        await pipeline_sleep(0.5)
         rms_noise_mv = 8.4  # Симуляция
         system_state.pwm_channels = [0] * 5
         if rms_noise_mv <= 12.0:
@@ -1250,10 +1278,12 @@ async def run_post_assembly_test(test_id: str) -> bool:
         logger.info("POST-ASSEMBLY: TEST-PA-05 Thermal Airflow запущен...")
         temp_start = system_state.coil_temp_model
         system_state.pwm_channels = [int(460 * 0.3)] * 5
-        await asyncio.sleep(1.0)
+        t0 = time.perf_counter()
+        await pipeline_sleep(1.0)
+        dt_actual = max(time.perf_counter() - t0, 1e-4)
         temp_end = system_state.coil_temp_model
         system_state.pwm_channels = [0] * 5
-        heat_rate = (temp_end - temp_start) / 1.0
+        heat_rate = (temp_end - temp_start) / dt_actual
         if heat_rate <= 0.25:
             system_state.post_assembly_results[test_id] = "PASS"
             system_state.post_assembly_logs[test_id] = (
@@ -1302,7 +1332,7 @@ async def execute_post_assembly_bist_pipeline():
         system_state.pipeline_status = "Post-Assembly BIST: FAILED"
         system_state.bist_unlocked = False
 
-    await asyncio.sleep(1.0)
+    await pipeline_sleep(1.0)
     system_state.active_pipeline = None
 
 
@@ -1649,7 +1679,7 @@ async def telemetry_broadcaster_10hz():
 # =====================================================================
 async def run_single_bist_test(test_id: str) -> bool:
     if system_state.simulate_fault_on_test_id == test_id:
-        await asyncio.sleep(1.5)
+        await pipeline_sleep(1.5)
         if test_id == "BIST-HW-01":
             system_state.bist_results[test_id] = "FAILED"
             system_state.bist_logs[test_id] = (
@@ -1696,7 +1726,7 @@ async def run_single_bist_test(test_id: str) -> bool:
 
     if test_id == "BIST-HW-01":
         logger.info("BIST: Тест ШИМ затворов (BIST-HW-01) запущен...")
-        await asyncio.sleep(1.5)
+        await pipeline_sleep(1.5)
         system_state.bist_results[test_id] = "PASS"
         system_state.bist_logs[test_id] = (
             "SUCCESS: Sweep complete on Coils 0-4. Hall sensor feedback amplitude:\n"
@@ -1705,7 +1735,7 @@ async def run_single_bist_test(test_id: str) -> bool:
         )
     elif test_id == "BIST-HW-02":
         logger.info("BIST: Тест полярности катушек (BIST-HW-02) запущен...")
-        await asyncio.sleep(1.5)
+        await pipeline_sleep(1.5)
         system_state.bist_results[test_id] = "PASS"
         system_state.bist_logs[test_id] = (
             "SUCCESS: All 5 coil winding polarities verified.\n"
@@ -1714,9 +1744,9 @@ async def run_single_bist_test(test_id: str) -> bool:
         )
     elif test_id == "BIST-HW-03":
         logger.info("BIST: Тест интерлока реле Агента (BIST-HW-03) запущен...")
-        await asyncio.sleep(1.2)
+        await pipeline_sleep(1.2)
         system_state.agent_relay_status = "Isolated"
-        await asyncio.sleep(0.3)
+        await pipeline_sleep(0.3)
         system_state.agent_relay_status = "Connected"
         system_state.bist_results[test_id] = "PASS"
         system_state.bist_logs[test_id] = (
@@ -1728,7 +1758,7 @@ async def run_single_bist_test(test_id: str) -> bool:
         logger.info("BIST: Профилирование шума земли (BIST-HW-04) запущен...")
         for duty in range(0, 461, 92):
             system_state.pwm_channels = [duty] * 5
-            await asyncio.sleep(0.2)
+            await pipeline_sleep(0.2)
         system_state.pwm_channels = [0] * 5
         system_state.bist_results[test_id] = "PASS"
         system_state.bist_logs[test_id] = (
@@ -1745,13 +1775,13 @@ async def run_single_bist_test(test_id: str) -> bool:
         while test_channel_pwm < 300:
             test_channel_pwm = min(test_channel_pwm + system_state.slew_rate_limit, 300)
             ramp_up_steps += 1
-            await asyncio.sleep(0.001)  # Симуляция тактов 860 Гц
+            await pipeline_sleep(0.001)  # Симуляция тактов 860 Гц
         # Ramp down: 300 → 0 с ограничением 10 ед/такт
         ramp_down_steps = 0
         while test_channel_pwm > 0:
             test_channel_pwm = max(test_channel_pwm - system_state.slew_rate_limit, 0)
             ramp_down_steps += 1
-            await asyncio.sleep(0.001)
+            await pipeline_sleep(0.001)
         # Проверка плавности: 300/10 = 30 шагов минимум (34.8 мс при 860 Гц)
         ramp_time_ms = ramp_down_steps * (1000.0 / 860.0)
         system_state.bist_results[test_id] = "PASS"
@@ -1767,14 +1797,14 @@ async def run_single_bist_test(test_id: str) -> bool:
 async def execute_takeoff_pipeline():
     system_state.active_pipeline = "SMOOTH_TAKEOFF"
     system_state.pipeline_status = "Running"
-    await asyncio.sleep(0.5)
+    await pipeline_sleep(0.5)
     system_state.active_pipeline = None
     system_state.pipeline_status = "Idle"
 
 async def execute_landing_pipeline():
     system_state.active_pipeline = "SAFE_LANDING"
     system_state.pipeline_status = "Running"
-    await asyncio.sleep(0.5)
+    await pipeline_sleep(0.5)
     system_state.active_pipeline = None
     system_state.pipeline_status = "Idle"
 
@@ -1815,12 +1845,12 @@ async def execute_bist_pipeline():
             system_state.pipeline_steps[5]["status"] = "FAILED"
             system_state.pipeline_status = f"Bring-up Failed at step {test_id}!"
             system_state.bist_unlocked = False
-            await asyncio.sleep(2.0)
+            await pipeline_sleep(2.0)
             system_state.active_pipeline = None
             return
 
     system_state.pipeline_steps[5]["status"] = "RUNNING"
-    await asyncio.sleep(1.0)
+    await pipeline_sleep(1.0)
     
     if all(res == "PASS" for res in system_state.bist_results.values()):
         system_state.bist_unlocked = True
@@ -1833,7 +1863,7 @@ async def execute_bist_pipeline():
         system_state.pipeline_steps[5]["status"] = "FAILED"
         system_state.pipeline_status = "Failed BIST validation."
         
-    await asyncio.sleep(2.0)
+    await pipeline_sleep(2.0)
     system_state.active_pipeline = None
 
 # =====================================================================
@@ -1871,7 +1901,7 @@ async def execute_shutdown_pipeline():
             next_pwm.append(max(cur_p + delta, 0))
         system_state.pwm_channels = next_pwm
         system_state.prev_pwm_channels = list(next_pwm)
-        await asyncio.sleep(0.2) # Спуск со скоростью 5 мм/с
+        await pipeline_sleep(0.2) # Спуск со скоростью 5 мм/с
     system_state.z = 0.0
     system_state.pipeline_steps[0]["status"] = "DONE"
     
@@ -1883,12 +1913,12 @@ async def execute_shutdown_pipeline():
         next_pwm = [int(max(pwm - min(max_step, pwm / (steps - s)), 0)) for pwm in system_state.pwm_channels]
         system_state.pwm_channels = next_pwm
         system_state.prev_pwm_channels = list(next_pwm)
-        await asyncio.sleep(0.1) # Спуск ШИМ за 2 секунды
+        await pipeline_sleep(0.1) # Спуск ШИМ за 2 секунды
     while any(pwm > 0 for pwm in system_state.pwm_channels):
         next_pwm = [int(max(pwm - max_step, 0)) for pwm in system_state.pwm_channels]
         system_state.pwm_channels = next_pwm
         system_state.prev_pwm_channels = list(next_pwm)
-        await asyncio.sleep(1.0 / 860.0)
+        await pipeline_sleep(1.0 / 860.0)
     system_state.pwm_channels = [0, 0, 0, 0, 0]
     system_state.prev_pwm_channels = [0, 0, 0, 0, 0]
     system_state.pipeline_steps[1]["status"] = "DONE"
@@ -1896,14 +1926,14 @@ async def execute_shutdown_pipeline():
     # Шаг 3: Перевод сферы Агента в режим парковки
     system_state.pipeline_steps[2]["status"] = "RUNNING"
     logger.info("SHUTDOWN: Отправка команд Standby Агенту по Wi-Fi...")
-    await asyncio.sleep(1.0)
+    await pipeline_sleep(1.0)
     system_state.agent_relay_status = "Connected" # Реле замкнуто на зарядку
     system_state.agent_coil_pwm = 0
     system_state.pipeline_steps[2]["status"] = "DONE"
     
     # Шаг 4: Фиксация безопасного отключения
     system_state.pipeline_steps[3]["status"] = "RUNNING"
-    await asyncio.sleep(1.0)
+    await pipeline_sleep(1.0)
     system_state.bist_unlocked = False
     system_state.bist_bypass_active = False
     system_state.safe_to_unplug = True # Разрешаем отсоединять кабель!
@@ -1911,7 +1941,7 @@ async def execute_shutdown_pipeline():
     
     system_state.pipeline_status = "System Secure - Safe to Power Off"
     logger.info("SHUTDOWN: Комплекс полностью обезопасен. Можно безопасно извлечь блок питания 27W!")
-    await asyncio.sleep(2.0)
+    await pipeline_sleep(2.0)
 
 
 # =====================================================================
@@ -1975,7 +2005,7 @@ async def execute_emergency_landing_pipeline(reason: str) -> None:
             next_pwm.append(max(cur_p + delta, 0))
         system_state.pwm_channels = next_pwm
         system_state.prev_pwm_channels = list(next_pwm)
-        await asyncio.sleep(0.2 * step_mm)
+        await pipeline_sleep(0.2 * step_mm)
     system_state.z = 0.0
     system_state.pipeline_steps[1]["status"] = "DONE"
 
@@ -1986,7 +2016,7 @@ async def execute_emergency_landing_pipeline(reason: str) -> None:
         next_pwm = [int(max(pwm - max_step, 0)) for pwm in system_state.pwm_channels]
         system_state.pwm_channels = next_pwm
         system_state.prev_pwm_channels = list(next_pwm)
-        await asyncio.sleep(tick_s)
+        await pipeline_sleep(tick_s)
     system_state.pwm_channels = [0, 0, 0, 0, 0]
     system_state.prev_pwm_channels = [0, 0, 0, 0, 0]
     system_state.pipeline_steps[2]["status"] = "DONE"
@@ -2015,7 +2045,7 @@ async def execute_helix_pipeline():
     ]
     for z in range(25, 45, 2):
         system_state.target_z = float(z)
-        await asyncio.sleep(0.15)
+        await pipeline_sleep(0.15)
     system_state.pipeline_steps[0]["status"] = "DONE"
     
     system_state.pipeline_steps[1]["status"] = "RUNNING"
@@ -2023,18 +2053,18 @@ async def execute_helix_pipeline():
         rad = math.radians(angle)
         system_state.x = 8.0 * math.cos(rad)
         system_state.y = 8.0 * math.sin(rad)
-        await asyncio.sleep(0.08)
+        await pipeline_sleep(0.08)
     system_state.pipeline_steps[1]["status"] = "DONE"
     
     system_state.pipeline_steps[2]["status"] = "RUNNING"
     system_state.x = 0.0
     system_state.y = 0.0
     system_state.target_z = 25.0
-    await asyncio.sleep(1.0)
+    await pipeline_sleep(1.0)
     system_state.pipeline_steps[2]["status"] = "DONE"
     
     system_state.pipeline_status = "Helix Complete (RTH)"
-    await asyncio.sleep(1.5)
+    await pipeline_sleep(1.5)
     system_state.active_pipeline = None
 
 # =====================================================================
@@ -2321,14 +2351,62 @@ _AGENT_FIELD_MAP = {
 }
 
 
+def process_agent_telemetry(msg: AgentTelemetryMessage, sender_ip: Optional[str] = None) -> None:
+    """Обновляет состояние системы данными телеметрии Агента (WS или UDP)."""
+    if sender_ip:
+        system_state.agent_wifi_ip = sender_ip
+    system_state.agent_wifi_status = "Connected"
+    system_state.agent_wifi_last_seen = time.perf_counter()
+
+    for field, attr in _AGENT_FIELD_MAP.items():
+        value = getattr(msg, field)
+        if value is not None:
+            setattr(system_state, attr, value)
+
+    # Если пришли углы Эйлера, обновляем единый список agent_orientation [pitch, roll, yaw]
+    if msg.pitch is not None or msg.roll is not None or msg.yaw is not None:
+        p = msg.pitch if msg.pitch is not None else system_state.agent_pitch
+        r = msg.roll if msg.roll is not None else system_state.agent_roll
+        y = msg.yaw if msg.yaw is not None else system_state.agent_yaw
+        system_state.agent_orientation = [p, r, y]
+
+
+class AgentTelemetryUDPProtocol(asyncio.DatagramProtocol):
+    """Служба приёма non-blocking UDP-датаграмм телеметрии от ESP32 (порт 4211, ревью F4/N-F2)."""
+
+    def __init__(self):
+        self.transport: Optional[asyncio.DatagramTransport] = None
+
+    def connection_made(self, transport: asyncio.DatagramTransport) -> None:
+        self.transport = transport
+        logger.info("Agent UDP telemetry receiver listening on port %d", AGENT_UDP_PORT)
+
+    def datagram_received(self, data: bytes, addr: tuple) -> None:
+        try:
+            text = data.decode("utf-8")
+            msg = AgentTelemetryMessage.model_validate_json(text)
+        except Exception:
+            logger.debug("Agent UDP: invalid datagram from %s", addr)
+            return
+
+        sender_ip = addr[0] if addr else None
+        process_agent_telemetry(msg, sender_ip=sender_ip)
+
+    def error_received(self, exc: Exception) -> None:
+        logger.debug("Agent UDP socket error: %s", exc)
+
+    def connection_lost(self, exc: Optional[Exception]) -> None:
+        pass
+
+
 @app.websocket("/ws/agent")
 async def agent_websocket_endpoint(websocket: WebSocket):
     """Канал Агент → Мозг (ESP32). Аутентификация токеном Агента."""
     if not await ws_authenticate(websocket, [get_agent_token()]):
         return
-    if websocket.client is not None:
-        # IP Агента нужен для unicast-передачи Wi-Fi кредов при handover
-        system_state.agent_wifi_ip = websocket.client.host
+    sender_ip = websocket.client.host if websocket.client is not None else None
+    if sender_ip:
+        system_state.agent_wifi_ip = sender_ip
     system_state.agent_wifi_status = "Connected"
     system_state.agent_wifi_last_seen = time.perf_counter()
     try:
@@ -2339,11 +2417,7 @@ async def agent_websocket_endpoint(websocket: WebSocket):
             except ValueError:
                 logger.debug("Агент: отброшено невалидное сообщение.")
                 continue
-            system_state.agent_wifi_last_seen = time.perf_counter()
-            for field, attr in _AGENT_FIELD_MAP.items():
-                value = getattr(msg, field)
-                if value is not None:
-                    setattr(system_state, attr, value)
+            process_agent_telemetry(msg, sender_ip=sender_ip)
     except WebSocketDisconnect:
         pass
     finally:
@@ -2366,18 +2440,18 @@ async def start_calibration():
         system_state.calib_state = CalibrationState.PARKED
         raise HTTPException(status_code=500, detail=f"Calibration Failed: Sensor RMS noise {rms_noise}mV >= 2.0mV")
         
-    await asyncio.sleep(1.0)
+    await pipeline_sleep(1.0)
     
     system_state.calib_state = CalibrationState.TAKEOFF_HOVER
     system_state.calib_log = "ШАГ 2/5: Плавный приподъем сферы на +3.0мм (Z = 33.0мм)..."
     system_state.target_z = 33.0
-    await asyncio.sleep(1.5)
+    await pipeline_sleep(1.5)
     
     system_state.calib_state = CalibrationState.WAIT_REMOVAL
     system_state.calib_log = "ШАГ 3/5: Сфера зависла! Раздвиньте половинки подставки и нажмите CONFIRM."
     
     async def timeout_handler():
-        await asyncio.sleep(30.0)
+        await pipeline_sleep(30.0)
         if system_state.calib_state == CalibrationState.WAIT_REMOVAL:
             logger.warning("Calibration timeout! Auto-landing sphere...")
             system_state.calib_state = CalibrationState.PARKED

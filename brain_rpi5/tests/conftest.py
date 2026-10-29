@@ -3,9 +3,25 @@ conftest.py — Shared pytest fixtures for brain_rpi5 tests.
 V11: Extended with AI, Audio and Post-Assembly BIST fixtures.
 """
 
+import os
+import sys
+
+# Ensure default fast execution for tests before any main_server import (N-H3)
+os.environ.setdefault("LEVITATION_PIPELINE_TIME_SCALE", "0.25")
+
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
+
+
+@pytest.fixture(autouse=True)
+def fast_pipeline_time_scale(monkeypatch):
+    """Speed up pipeline sleeps for fast CI/CD execution (N-H3)."""
+    scale = float(os.environ.get("LEVITATION_PIPELINE_TIME_SCALE", "0.25"))
+    for mod_name in ("src.main_server", "brain_rpi5.src.main_server"):
+        mod = sys.modules.get(mod_name)
+        if mod is not None:
+            monkeypatch.setattr(mod, "PIPELINE_TIME_SCALE", scale, raising=False)
 
 
 @pytest.fixture

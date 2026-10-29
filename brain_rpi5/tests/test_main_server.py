@@ -16,7 +16,7 @@ References:
   - quality-v4.md: RPI-CL-1, WEB-CL-1, WEB-CL-2
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 import json
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +28,11 @@ from src.main_server import (
     CalibrationState,
     get_api_token,
     get_agent_token,
+    AgentTelemetryUDPProtocol,
+    AgentTelemetryMessage,
+    process_agent_telemetry,
+    PIPELINE_TIME_SCALE,
+    pipeline_sleep,
 )
 
 
@@ -377,3 +382,78 @@ class TestWebGuiStaticAndTabs:
         assert resp_sd.status_code == 200
         assert system_state.calib_state == CalibrationState.PARKED
         assert system_state.calib_timer_task is None
+
+
+class TestAgentUDPTelemetry:
+    """Tests for ESP32 UDP Telemetry datagram listener (port 4211, review F4/N-F2)."""
+
+    def test_udp_valid_telemetry_datagram(self):
+        proto = AgentTelemetryUDPProtocol()
+        transport = MagicMock()
+        proto.connection_made(transport)
+
+        # Datagram formatted identically to bno085_format_telemetry_json
+        packet = json.dumps({
+            "pitch": 12.34,
+            "roll": -5.67,
+            "yaw": 180.25,
+            "battery": 88.5,
+            "coil_pwm": 320,
+            "relay": "Isolated",
+            "rssi": -55
+        }).encode("utf-8")
+
+        proto.datagram_received(packet, ("192.168.42.105", 4211))
+
+        assert system_state.agent_wifi_ip == "192.168.42.105"
+        assert system_state.agent_wifi_status == "Connected"
+        assert system_state.agent_pitch == 12.34
+        assert system_state.agent_roll == -5.67
+        assert system_state.agent_yaw == 180.25
+        assert system_state.agent_orientation == [12.34, -5.67, 180.25]
+        assert system_state.agent_battery == 88.5
+        assert system_state.agent_coil_pwm == 320
+        assert system_state.agent_relay_status == "Isolated"
+        assert system_state.agent_wifi_rssi == -55
+
+    def test_udp_garbage_datagram_ignored(self):
+        proto = AgentTelemetryUDPProtocol()
+        initial_ip = system_state.agent_wifi_ip
+
+        # Send invalid non-JSON data
+        proto.datagram_received(b"\xde\xad\xbe\xef\x00\x01\x02", ("192.168.42.199", 4211))
+
+        # State should remain unchanged
+        assert system_state.agent_wifi_ip == initial_ip
+
+    def test_udp_out_of_range_datagram_rejected(self):
+        proto = AgentTelemetryUDPProtocol()
+        initial_battery = system_state.agent_battery
+
+        # Battery 150% is out of Pydantic bounds [0..100]
+        packet = json.dumps({"battery": 150.0}).encode("utf-8")
+        proto.datagram_received(packet, ("192.168.42.105", 4211))
+
+        assert system_state.agent_battery == initial_battery
+
+    def test_udp_error_received_does_not_crash(self):
+        proto = AgentTelemetryUDPProtocol()
+        proto.error_received(RuntimeError("Socket error simulation"))
+        proto.connection_lost(None)
+
+
+class TestPipelineTimeScale:
+    """Tests for pipeline sleep time scaling (N-H3)."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_sleep_scales_accurately(self, monkeypatch):
+        import time
+        import src.main_server as ms
+
+        monkeypatch.setattr(ms, "PIPELINE_TIME_SCALE", 0.01)
+        t0 = time.perf_counter()
+        await ms.pipeline_sleep(1.0)
+        elapsed = time.perf_counter() - t0
+
+        # 1.0s scaled down to 0.01s should take well under 0.1s
+        assert elapsed < 0.15
