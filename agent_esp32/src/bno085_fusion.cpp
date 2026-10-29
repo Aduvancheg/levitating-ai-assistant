@@ -5,6 +5,7 @@
 
 #include "bno085_fusion.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #ifndef M_PI
@@ -39,6 +40,32 @@ static void normalize_quaternion(OrientationData *d) {
     d->q_z *= inv_mag;
 }
 
+static void compute_euler(OrientationData *out_data) {
+    /* Convert normalized quaternion to Euler angles (ZYX convention) */
+    float qx = out_data->q_x;
+    float qy = out_data->q_y;
+    float qz = out_data->q_z;
+    float qw = out_data->q_w;
+
+    /* Roll (X-axis rotation) */
+    float sinr_cosp = 2.0f * (qw * qx + qy * qz);
+    float cosr_cosp = 1.0f - 2.0f * (qx * qx + qy * qy);
+    out_data->roll = atan2f(sinr_cosp, cosr_cosp) * (180.0f / (float)M_PI);
+
+    /* Pitch (Y-axis rotation) — clamped at gimbal lock */
+    float sinp = 2.0f * (qw * qy - qz * qx);
+    if (fabsf(sinp) >= 1.0f) {
+        out_data->pitch = copysignf(90.0f, sinp);
+    } else {
+        out_data->pitch = asinf(sinp) * (180.0f / (float)M_PI);
+    }
+
+    /* Yaw (Z-axis rotation) */
+    float siny_cosp = 2.0f * (qw * qz + qx * qy);
+    float cosy_cosp = 1.0f - 2.0f * (qy * qy + qz * qz);
+    out_data->yaw = atan2f(siny_cosp, cosy_cosp) * (180.0f / (float)M_PI);
+}
+
 #ifdef UNIT_TEST
 bool bno085_test_compute_euler(float qw, float qx, float qy, float qz, OrientationData *out_data) {
     if (out_data == nullptr) return false;
@@ -49,34 +76,42 @@ bool bno085_test_compute_euler(float qw, float qx, float qy, float qz, Orientati
     out_data->valid = true;
     normalize_quaternion(out_data);
     if (!out_data->valid) return false;
-
-    /* Compute Euler (same as compute_euler but duplicating here since compute_euler is static, 
-     * or we can just call compute_euler if we pull it up... Wait, compute_euler is not compiled in UNIT_TEST 
-     * because it's inside #if defined(ARDUINO)? Let's check. 
-     * Actually, let's just do the math here to be safe and independent. */
-    float qx2 = out_data->q_x;
-    float qy2 = out_data->q_y;
-    float qz2 = out_data->q_z;
-    float qw2 = out_data->q_w;
-
-    float sinr_cosp = 2.0f * (qw2 * qx2 + qy2 * qz2);
-    float cosr_cosp = 1.0f - 2.0f * (qx2 * qx2 + qy2 * qy2);
-    out_data->roll = atan2f(sinr_cosp, cosr_cosp) * (180.0f / (float)M_PI);
-
-    float sinp = 2.0f * (qw2 * qy2 - qz2 * qx2);
-    if (fabsf(sinp) >= 1.0f) {
-        out_data->pitch = copysignf(90.0f, sinp);
-    } else {
-        out_data->pitch = asinf(sinp) * (180.0f / (float)M_PI);
-    }
-
-    float siny_cosp = 2.0f * (qw2 * qz2 + qx2 * qy2);
-    float cosy_cosp = 1.0f - 2.0f * (qy2 * qy2 + qz2 * qz2);
-    out_data->yaw = atan2f(siny_cosp, cosy_cosp) * (180.0f / (float)M_PI);
-
+    compute_euler(out_data);
     return true;
 }
 #endif
+
+bool bno085_format_telemetry_json(const OrientationData *data,
+                                  float battery_pct,
+                                  uint16_t coil_pwm,
+                                  bool qi_isolated,
+                                  int8_t rssi_dbm,
+                                  char *out_buf,
+                                  size_t buf_size) {
+    if (data == nullptr || !data->valid || out_buf == nullptr || buf_size == 0) {
+        return false;
+    }
+    if (!isfinite(data->pitch) || !isfinite(data->roll) || !isfinite(data->yaw) || !isfinite(battery_pct)) {
+        return false;
+    }
+    float clamped_bat = battery_pct < 0.0f ? 0.0f : (battery_pct > 100.0f ? 100.0f : battery_pct);
+    uint16_t clamped_pwm = coil_pwm > 1023u ? 1023u : coil_pwm;
+    const char *relay_str = qi_isolated ? "Isolated" : "Connected";
+
+    int written = snprintf(
+        out_buf,
+        buf_size,
+        "{\"pitch\":%.2f,\"roll\":%.2f,\"yaw\":%.2f,\"battery\":%.1f,\"coil_pwm\":%u,\"relay\":\"%s\",\"rssi\":%d}",
+        (double)data->pitch,
+        (double)data->roll,
+        (double)data->yaw,
+        (double)clamped_bat,
+        (unsigned)clamped_pwm,
+        relay_str,
+        (int)rssi_dbm
+    );
+    return (written > 0) && ((size_t)written < buf_size);
+}
 
 /* ---- I2C bus watchdog --------------------------------------------- */
 
@@ -154,32 +189,6 @@ bool bno085_init(uint8_t sda_pin, uint8_t scl_pin) {
     }
 
     return true;
-}
-
-static void compute_euler(OrientationData *out_data) {
-    /* Convert normalized quaternion to Euler angles (ZYX convention) */
-    float qx = out_data->q_x;
-    float qy = out_data->q_y;
-    float qz = out_data->q_z;
-    float qw = out_data->q_w;
-
-    /* Roll (X-axis rotation) */
-    float sinr_cosp = 2.0f * (qw * qx + qy * qz);
-    float cosr_cosp = 1.0f - 2.0f * (qx * qx + qy * qy);
-    out_data->roll = atan2f(sinr_cosp, cosr_cosp) * (180.0f / (float)M_PI);
-
-    /* Pitch (Y-axis rotation) — clamped at gimbal lock */
-    float sinp = 2.0f * (qw * qy - qz * qx);
-    if (fabsf(sinp) >= 1.0f) {
-        out_data->pitch = copysignf(90.0f, sinp);
-    } else {
-        out_data->pitch = asinf(sinp) * (180.0f / (float)M_PI);
-    }
-
-    /* Yaw (Z-axis rotation) */
-    float siny_cosp = 2.0f * (qw * qz + qx * qy);
-    float cosy_cosp = 1.0f - 2.0f * (qy * qy + qz * qz);
-    out_data->yaw = atan2f(siny_cosp, cosy_cosp) * (180.0f / (float)M_PI);
 }
 
 bool bno085_read_orientation(OrientationData *out_data) {

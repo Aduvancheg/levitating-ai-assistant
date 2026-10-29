@@ -94,7 +94,9 @@ class HallADS1115Driver:
         """
         self.i2c_bus = i2c_bus
         self.address = address
-        self.poly_coeffs: List[float] = list(poly_coeffs) if poly_coeffs is not None else [1.2, -5.4, 25.0]
+        self.poly_coeffs: List[float] = (
+            list(poly_coeffs) if poly_coeffs is not None else list(self.MONOTONIC_DEFAULT_COEFFS)
+        )
         self.valid_voltage_range = valid_voltage_range or self.DEFAULT_VALID_VOLTAGE_RANGE
         self.coil_ff_gains: List[float] = list(coil_ff_gains) if coil_ff_gains is not None else [0.0] * 5
 

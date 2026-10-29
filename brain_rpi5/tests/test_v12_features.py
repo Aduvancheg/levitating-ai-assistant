@@ -276,3 +276,91 @@ async def test_sqlite_auto_archiving_when_oversized_preserves_recent_1000_turns(
         ms.DB_PATH = original_db_str
         ms.TEMP_CACHE_DIR = original_cache
 
+
+# =====================================================================
+# REVIEW 2 REGRESSION TESTS (N-C1, N-C2, N-C4, N-A1, N-A4, N-W2)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_cold_start_bist_locked_does_not_false_trigger_emergency_landing():
+    """Review N-C1: When bist_unlocked=False on cold start, Wi-Fi elapsed > 500ms must not latch EMERGENCY_SAFE_LANDING."""
+    system_state.bist_unlocked = False
+    system_state.bist_bypass_active = False
+    system_state.target_z = 25.0
+    system_state.agent_wifi_last_seen = time.perf_counter() - 1.5
+
+    loop_task = asyncio.create_task(core_loop_860hz())
+    try:
+        await asyncio.sleep(0.05)
+        assert system_state.active_pipeline is None
+        assert system_state.safe_to_unplug is False
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_emergency_landing_preempts_active_flight_pipeline():
+    """Review N-C2: Emergency landing preempts active SPATIAL_HELIX when Wi-Fi heartbeat is lost."""
+    from brain_rpi5.src.main_server import execute_helix_pipeline, start_pipeline
+
+    system_state.target_z = 1.0
+    start_pipeline("SPATIAL_HELIX", execute_helix_pipeline)
+    await asyncio.sleep(0.02)
+    assert system_state.active_pipeline == "SPATIAL_HELIX"
+
+    # Simulate Wi-Fi loss during helix
+    system_state.agent_wifi_last_seen = time.perf_counter() - 0.600
+    loop_task = asyncio.create_task(core_loop_860hz())
+    try:
+        await asyncio.sleep(0.05)
+        assert system_state.active_pipeline == "EMERGENCY_SAFE_LANDING"
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_hardware_control_step_integration():
+    """Review N-C4: run_hardware_control_step fuses Hall & ToF and maps 3-axis PID to 5 coil duties."""
+    from brain_rpi5.src.main_server import run_hardware_control_step
+
+    system_state.target_z = 25.0
+    system_state.tof_grid = [25.0] * 64
+    duties = await run_hardware_control_step(1.0 / 860.0)
+    assert duties is not None
+    assert len(duties) == 5
+    assert all(0 <= d <= system_state.max_duty_limit for d in duties)
+
+
+def test_camera_stream_auth_and_inspect_surface_endpoint(client: TestClient):
+    """Review N-A1, N-A2, N-W2: /api/agent/camera_stream requires token (header or query) and inspect_surface works."""
+    unauth = TestClient(app, raise_server_exceptions=False)
+    assert unauth.get("/api/agent/camera_stream?frames=1").status_code == 401
+
+    token_resp = unauth.get(f"/api/agent/camera_stream?frames=1&res=1600x1200&token={get_api_token()}")
+    assert token_resp.status_code == 200
+    assert system_state.camera_resolution == "1600x1200"
+
+    insp = client.post("/api/agent/inspect_surface", json={"tilt_angle_deg": 12.0})
+    assert insp.status_code == 200
+    assert insp.json()["status"] == "success"
+    assert insp.json()["tilt_angle_deg"] == 12.0
+
+
+def test_post_assembly_bist_allowed_after_emergency_landing():
+    """Review N-A4: guard_command allows POST_ASSEMBLY_BIST alongside BIST_RUN_ALL after emergency landing."""
+    from brain_rpi5.src.main_server import guard_command
+
+    system_state.active_pipeline = "EMERGENCY_SAFE_LANDING"
+    system_state.safe_to_unplug = True
+    assert guard_command("BIST_RUN_ALL", source="operator").allowed is True
+    assert guard_command("POST_ASSEMBLY_BIST", source="operator").allowed is True
+
+

@@ -119,9 +119,9 @@ WS_AUTH_TIMEOUT_S = 5.0
 async def api_auth_middleware(request: Request, call_next):
     path = request.url.path
     if path.startswith("/api/") and request.method != "OPTIONS":
-        if path == "/api/agent/camera_stream" and request.method == "GET":
-            return await call_next(request)
         provided = extract_bearer(request.headers.get("authorization"))
+        if not provided and path == "/api/agent/camera_stream" and request.method == "GET":
+            provided = request.query_params.get("token")
         accepted = [get_api_token()]
         if path.startswith(AGENT_API_PREFIX):
             accepted.append(get_agent_token())
@@ -246,9 +246,10 @@ class SystemState:
         self.ai_thoughts_log: Deque[str] = deque(maxlen=100)
         self.ai_chat_history: Deque[Dict[str, str]] = deque(maxlen=200)  # [{role, content, ts}]
         self.ai_model_name: str = "gemini-2.0-flash"
-        self.maintenance_logs: List[str] = []
+        self.maintenance_logs: Deque[str] = deque(maxlen=50)
         self.camera_stream_enabled: bool = True
         self.camera_resolution: str = "640x480"
+        self.hardware_mode: str = os.environ.get("LEVITATION_HARDWARE_MODE", "sim")
 
         # Post-Assembly BIST Suite v1.0 (TEST-PA-01..05)
         self.post_assembly_results: Dict[str, str] = {
@@ -330,7 +331,11 @@ def guard_command(command: str, source: str = "operator") -> GuardDecision:
         return _ALLOW
 
     # После завершённого SAFE_SHUTDOWN или EMERGENCY_SAFE_LANDING систему можно заново «взвести» только через BIST.
-    if active in ("SAFE_SHUTDOWN", "EMERGENCY_SAFE_LANDING") and system_state.safe_to_unplug and command == "BIST_RUN_ALL":
+    if (
+        active in ("SAFE_SHUTDOWN", "EMERGENCY_SAFE_LANDING")
+        and system_state.safe_to_unplug
+        and command in ("BIST_RUN_ALL", "POST_ASSEMBLY_BIST")
+    ):
         return _ALLOW
 
     if active is not None:
@@ -376,7 +381,10 @@ def start_pipeline(
         if system_state.calib_timer_task is not None and not system_state.calib_timer_task.done():
             system_state.calib_timer_task.cancel()
         system_state.calib_timer_task = None
-        if name == "SAFE_SHUTDOWN" or system_state.calib_state != CalibrationState.UNLOCKED_FLIGHT:
+        if (
+            name in ("SAFE_SHUTDOWN", "EMERGENCY_SAFE_LANDING")
+            or system_state.calib_state != CalibrationState.UNLOCKED_FLIGHT
+        ):
             system_state.calib_state = CalibrationState.PARKED
 
     system_state.active_pipeline = name
@@ -416,6 +424,7 @@ AI_HISTORY_DB_PATH: Path = _DEFAULT_DB_PATH
 DB_PATH: str = str(_DEFAULT_DB_PATH)
 AI_CONFIG_PATH = config_dir() / "ai_config.json"
 TEMP_CACHE_DIR = Path("/tmp/antigravity")
+_db_lock = asyncio.Lock()
 
 
 def _resolve_active_db_path(db_path: Optional[Union[str, Path]] = None) -> Path:
@@ -478,7 +487,7 @@ def archive_db_if_oversized(
         f"DB Size is {size_mb:.1f} MB (> {threshold_mb:.1f} MB). "
         f"Executing WAL Checkpoint & Zip Archiving..."
     )
-    timestamp_str = datetime.now().strftime("%Y_%m_%d_%H%M")
+    timestamp_str = datetime.now().strftime("%Y_%m_%d_%H%M%S")
     zip_path = target_path.parent / f"history_archive_{timestamp_str}.zip"
 
     try:
@@ -521,9 +530,6 @@ def archive_db_if_oversized(
                            SELECT id FROM conversation_history ORDER BY id DESC LIMIT 1000
                        )"""
                 )
-            for tbl in list(tables):
-                if tbl not in ("messages", "conversation_history", "sqlite_sequence"):
-                    cur.execute(f'DROP TABLE IF EXISTS "{tbl}"')
             conn.commit()
             conn.execute("PRAGMA wal_checkpoint(FULL)")
             conn.execute("VACUUM")
@@ -647,42 +653,45 @@ class AIHistoryDB:
             logger.warning("aiosqlite не установлен — SQLite-память AI отключена.")
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(str(self.db_path)) as db:
-            await db.execute(
-                """CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp TEXT NOT NULL
-                )"""
-            )
-            await db.commit()
+        async with _db_lock:
+            async with aiosqlite.connect(str(self.db_path)) as db:
+                await db.execute(
+                    """CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp TEXT NOT NULL
+                    )"""
+                )
+                await db.commit()
 
     async def save_message(self, role: str, content: str) -> None:
         if not HAS_AIOSQLITE:
             return
         ts = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(str(self.db_path)) as db:
-            await db.execute(
-                "INSERT INTO messages (role, content, timestamp) VALUES (?, ?, ?)",
-                (role, content, ts),
-            )
-            await db.commit()
+        async with _db_lock:
+            async with aiosqlite.connect(str(self.db_path)) as db:
+                await db.execute(
+                    "INSERT INTO messages (role, content, timestamp) VALUES (?, ?, ?)",
+                    (role, content, ts),
+                )
+                await db.commit()
 
     async def load_recent(self, limit: int = 10) -> List[Dict[str, str]]:
         if not HAS_AIOSQLITE:
             return []
         try:
-            async with aiosqlite.connect(str(self.db_path)) as db:
-                cursor = await db.execute(
-                    "SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT ?",
-                    (limit,),
-                )
-                rows = await cursor.fetchall()
-                return [
-                    {"role": r[0], "content": r[1], "ts": r[2]}
-                    for r in reversed(rows)
-                ]
+            async with _db_lock:
+                async with aiosqlite.connect(str(self.db_path)) as db:
+                    cursor = await db.execute(
+                        "SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT ?",
+                        (limit,),
+                    )
+                    rows = await cursor.fetchall()
+                    return [
+                        {"role": r[0], "content": r[1], "ts": r[2]}
+                        for r in reversed(rows)
+                    ]
         except Exception:
             return []
 
@@ -995,7 +1004,8 @@ async def tool_inspect_surface(tilt_angle_deg: Any = 15.0) -> str:
 
 async def tool_clear_temp_cache() -> str:
     """Безопасная очистка временных файлов и авто-архивация ai_history.db при > 50 МБ (TASK-AI-6 / RPI-CL-15)."""
-    archive_path = await asyncio.to_thread(archive_db_if_oversized)
+    async with _db_lock:
+        archive_path = await asyncio.to_thread(archive_db_if_oversized)
     archive_note = f" Archived DB to {archive_path.name}." if archive_path else ""
     if not TEMP_CACHE_DIR.exists():
         return f"OK: /tmp/antigravity/ directory does not exist. Nothing to clean.{archive_note}"
@@ -1261,6 +1271,9 @@ async def execute_post_assembly_bist_pipeline():
     """Пайплайн пост-сборочного тестирования (5 сценариев)."""
     system_state.active_pipeline = "POST_ASSEMBLY_BIST"
     system_state.pipeline_status = "In Progress"
+    system_state.safe_to_unplug = False
+    system_state.emergency_reason = None
+    system_state.agent_wifi_last_seen = time.perf_counter()
     system_state.pipeline_steps = [
         {"step_id": "PA-01", "desc": "Изоляция силовых каналов (TEST-PA-01)", "status": "PENDING"},
         {"step_id": "PA-02", "desc": "Полярность и симметрия катушек (TEST-PA-02)", "status": "PENDING"},
@@ -1380,6 +1393,61 @@ class BistRetryRequest(BaseModel):
 # =====================================================================
 # ВЫЧИСЛИТЕЛЬНЫЕ СЛУЖБЫ И СТАБИЛИЗАЦИОННЫЙ ЦИКЛ (860 Гц)
 # =====================================================================
+async def run_hardware_control_step(dt: float) -> Optional[List[int]]:
+    """Выполнить один такт аппаратного контура (Hall ADS1115 + ToF VL53L5CX + ComplementaryFilter + TriAxisPID + CoilMapper + UART).
+
+    Используется в core_loop_860hz при system_state.hardware_mode == 'real' (ревью N-C4).
+    """
+    voltages = await asyncio.to_thread(hall_driver.read_all_channels_voltage)
+    valid_v: List[float] = []
+    valid_d: List[float] = []
+    for v in voltages:
+        if v is not None:
+            v_comp = hall_driver.compensate_coil_field(v, system_state.prev_pwm_channels)
+            valid_v.append(v_comp)
+            d = hall_driver.voltage_to_distance(v_comp)
+            if d is not None:
+                valid_d.append(d)
+    if valid_v:
+        system_state.raw_hall = (valid_v + [valid_v[-1]] * 4)[:4]
+    hall_z = (sum(valid_d) / len(valid_d)) if valid_d else None
+
+    tof_z: Optional[float] = None
+    if len(system_state.tof_grid) == 64 and any(v > 5.0 for v in system_state.tof_grid):
+        matrix_8x8 = [system_state.tof_grid[r * 8:(r + 1) * 8] for r in range(8)]
+        try:
+            tof_driver.update_gimbal_angles(system_state.agent_pitch, system_state.agent_roll)
+            tof_res = tof_driver.process_matrix_frame(matrix_8x8)
+            bx, by, bz = tof_res["base_xyz"]
+            system_state.x = round(bx, 3)
+            system_state.y = round(by, 3)
+            tof_z = bz
+        except ValueError:
+            tof_z = None
+
+    fused_z = levitation_core.filter.fuse(hall_z, tof_z)
+    if fused_z is None:
+        return [0, 0, 0, 0, 0]
+
+    system_state.z = float(fused_z)
+    if system_state.target_z <= 0:
+        levitation_core.pid.reset_all()
+        return [0, 0, 0, 0, 0]
+
+    levitation_core.pid.pid_z.kp = system_state.kp
+    levitation_core.pid.pid_z.ki = system_state.ki
+    levitation_core.pid.pid_z.kd = system_state.kd
+    levitation_core.mapper.max_duty = system_state.max_duty_limit
+    clamped_dt = min(max(dt, 1e-4), levitation_core.MAX_PID_DT_S)
+    px, py, pz = levitation_core.pid.compute(
+        (0.0, 0.0, system_state.target_z),
+        (system_state.x, system_state.y, system_state.z),
+        dt=clamped_dt,
+    )
+    duties = levitation_core.mapper.map(px, py, 200.0 + pz)
+    return duties
+
+
 async def core_loop_860hz():
     """
     Главный асинхронный поток стабилизации. Крутится на частоте 860 Гц.
@@ -1390,48 +1458,67 @@ async def core_loop_860hz():
     last_time = time.perf_counter()
     integral_error = 0.0
     last_error = 0.0
+    non_preemptible = (
+        "SAFE_SHUTDOWN", "EMERGENCY_SAFE_LANDING", "SAFE_LANDING",
+        "BIST_RUN_ALL", "BIST_RETRY", "POST_ASSEMBLY_BIST",
+    )
 
     while True:
         loop_start = time.perf_counter()
         tick_dt = max(loop_start - last_time, target_dt)
         
-        # Check Heartbeat & Battery Safety (TASK-AI-5 / RPI-CL-14)
+        # Check Heartbeat & Battery Safety (TASK-AI-5 / RPI-CL-14 / ревью N-C1, N-C2)
+        power_armed = system_state.bist_unlocked or system_state.bist_bypass_active
         wifi_elapsed = time.perf_counter() - system_state.agent_wifi_last_seen
-        if system_state.target_z > 0 and system_state.active_pipeline is None:
+        if (
+            power_armed
+            and system_state.target_z > 0
+            and system_state.active_pipeline not in non_preemptible
+        ):
             if wifi_elapsed > 0.500:
-                asyncio.create_task(
-                    execute_emergency_landing_pipeline("Wi-Fi Heartbeat Loss (>500ms)")
+                start_pipeline(
+                    "EMERGENCY_SAFE_LANDING",
+                    lambda: execute_emergency_landing_pipeline("Wi-Fi Heartbeat Loss (>500ms)"),
+                    preempt=True,
                 )
             elif system_state.agent_battery < 10.0:
-                asyncio.create_task(
-                    execute_emergency_landing_pipeline("Critical Battery Level (<10%)")
+                start_pipeline(
+                    "EMERGENCY_SAFE_LANDING",
+                    lambda: execute_emergency_landing_pipeline("Critical Battery Level (<10%)"),
+                    preempt=True,
                 )
 
-        # Симулируем сбор данных
-        system_state.raw_hall = [1.24 + 0.001 * math.sin(time.perf_counter() * 10), 1.25, 1.23, 1.26]
-        system_state.z = 25.0 + 0.15 * math.sin(time.perf_counter() * 5) if system_state.target_z > 0 else 0.0
-        
-        # ПИД Расчет (только если левитация активна)
-        if system_state.target_z > 0:
-            error = system_state.target_z - system_state.z
-            current_time = time.perf_counter()
-            dt = current_time - last_time if current_time - last_time > 0 else target_dt
-            
-            p_term = system_state.kp * error
-            integral_error += error * dt
-            integral_error = max(min(integral_error, 100.0), -100.0) 
-            i_term = system_state.ki * integral_error
-            d_term = system_state.kd * ((error - last_error) / dt)
-            
-            pid_output = p_term + i_term + d_term
-            base_pwm = int(max(min(200 + pid_output, system_state.max_duty_limit), 0))
-            last_error = error
-            last_time = current_time
+        if system_state.hardware_mode == "real":
+            hw_duties = await run_hardware_control_step(tick_dt)
+            last_time = time.perf_counter()
+            target_duties = hw_duties if (hw_duties is not None and system_state.target_z > 0) else [0, 0, 0, 0, 0]
         else:
-            base_pwm = 0
-            integral_error = 0.0
-            last_error = 0.0
-            last_time = loop_start
+            # Симулируем сбор данных
+            system_state.raw_hall = [1.24 + 0.001 * math.sin(time.perf_counter() * 10), 1.25, 1.23, 1.26]
+            system_state.z = 25.0 + 0.15 * math.sin(time.perf_counter() * 5) if system_state.target_z > 0 else 0.0
+            
+            # ПИД Расчет (только если левитация активна)
+            if system_state.target_z > 0:
+                error = system_state.target_z - system_state.z
+                current_time = time.perf_counter()
+                dt = current_time - last_time if current_time - last_time > 0 else target_dt
+                
+                p_term = system_state.kp * error
+                integral_error += error * dt
+                integral_error = max(min(integral_error, 100.0), -100.0) 
+                i_term = system_state.ki * integral_error
+                d_term = system_state.kd * ((error - last_error) / dt)
+                
+                pid_output = p_term + i_term + d_term
+                base_pwm = int(max(min(200 + pid_output, system_state.max_duty_limit), 0))
+                last_error = error
+                last_time = current_time
+            else:
+                base_pwm = 0
+                integral_error = 0.0
+                last_error = 0.0
+                last_time = loop_start
+            target_duties = [base_pwm] * 5 if system_state.target_z > 0 else [0, 0, 0, 0, 0]
         
         # Программный интерлок безопасности BIST, SAFE_SHUTDOWN и EMERGENCY_SAFE_LANDING
         if system_state.active_pipeline in ("SAFE_SHUTDOWN", "EMERGENCY_SAFE_LANDING"):
@@ -1440,7 +1527,7 @@ async def core_loop_860hz():
         elif not system_state.bist_unlocked and not system_state.bist_bypass_active and system_state.active_pipeline is None:
             system_state.pwm_channels = [0, 0, 0, 0, 0]  # Жесткая блокировка
         elif system_state.active_pipeline is None:
-            system_state.pwm_channels = [base_pwm] * 5 if system_state.target_z > 0 else [0, 0, 0, 0, 0]
+            system_state.pwm_channels = target_duties
             
         # Применяем математический Slew-Rate Limiter (Ограничитель di/dt) для подавления индуктивных выбросов (Lenz's Law) - V8
         MAX_PWM_STEP_PER_TICK = system_state.slew_rate_limit
@@ -1459,6 +1546,8 @@ async def core_loop_860hz():
         
         system_state.pwm_channels = clamped_channels
         system_state.prev_pwm_channels = list(clamped_channels)
+        if system_state.hardware_mode == "real":
+            levitation_core._send_packet(clamped_channels)
             
         # Термальный интегратор через ThermalModel из core_loop.py (ревью A11 / P6)
         levitation_core.thermal_model.estimated_temp_c = system_state.coil_temp_model
@@ -1735,6 +1824,7 @@ async def execute_bist_pipeline():
     
     if all(res == "PASS" for res in system_state.bist_results.values()):
         system_state.bist_unlocked = True
+        system_state.agent_wifi_last_seen = time.perf_counter()
         system_state.pipeline_steps[5]["status"] = "DONE"
         system_state.pipeline_status = "System Unlocked (All Tests PASS)"
         logger.info("BIST: Все 5 тестов успешно пройдены! Система разблокирована.")
@@ -1763,13 +1853,24 @@ async def execute_shutdown_pipeline():
         {"step_id": "SHUTDOWN-04", "desc": "Фиксация и разблокировка безопасного отключения...", "status": "PENDING"}
     ]
     
-    # Шаг 1: Плавный спуск сферы
+    # Шаг 1: Плавный спуск сферы с согласованным снижением ШИМ (ревью N-C3)
     system_state.pipeline_steps[0]["status"] = "RUNNING"
     logger.info("SHUTDOWN: Запущен плавный спуск Агента со скоростью 5 мм/с...")
     current_z = system_state.target_z
+    initial_z = max(current_z, 1e-6)
+    initial_pwm = list(system_state.pwm_channels)
+    max_step = max(1, min(int(system_state.slew_rate_limit), 10))
     while current_z > 0.0:
         current_z = max(current_z - 1.0, 0.0)
         system_state.target_z = current_z
+        ratio = current_z / initial_z
+        next_pwm = []
+        for i, cur_p in enumerate(system_state.pwm_channels):
+            desired_p = int(round(initial_pwm[i] * ratio))
+            delta = max(min(desired_p - cur_p, max_step), -max_step)
+            next_pwm.append(max(cur_p + delta, 0))
+        system_state.pwm_channels = next_pwm
+        system_state.prev_pwm_channels = list(next_pwm)
         await asyncio.sleep(0.2) # Спуск со скоростью 5 мм/с
     system_state.z = 0.0
     system_state.pipeline_steps[0]["status"] = "DONE"
@@ -1777,12 +1878,19 @@ async def execute_shutdown_pipeline():
     # Шаг 2: Размагничивание катушек
     system_state.pipeline_steps[1]["status"] = "RUNNING"
     logger.info("SHUTDOWN: Постепенное снижение ШИМ-выходов для подавления выбросов ЭДС...")
-    current_pwm = list(system_state.pwm_channels)
     steps = 20
     for s in range(steps):
-        system_state.pwm_channels = [int(max(pwm - (pwm / (steps - s)), 0)) for pwm in system_state.pwm_channels]
+        next_pwm = [int(max(pwm - min(max_step, pwm / (steps - s)), 0)) for pwm in system_state.pwm_channels]
+        system_state.pwm_channels = next_pwm
+        system_state.prev_pwm_channels = list(next_pwm)
         await asyncio.sleep(0.1) # Спуск ШИМ за 2 секунды
+    while any(pwm > 0 for pwm in system_state.pwm_channels):
+        next_pwm = [int(max(pwm - max_step, 0)) for pwm in system_state.pwm_channels]
+        system_state.pwm_channels = next_pwm
+        system_state.prev_pwm_channels = list(next_pwm)
+        await asyncio.sleep(1.0 / 860.0)
     system_state.pwm_channels = [0, 0, 0, 0, 0]
+    system_state.prev_pwm_channels = [0, 0, 0, 0, 0]
     system_state.pipeline_steps[1]["status"] = "DONE"
     
     # Шаг 3: Перевод сферы Агента в режим парковки
@@ -1851,18 +1959,28 @@ async def execute_emergency_landing_pipeline(reason: str) -> None:
     await audio_service.speak_text(alert_msg)
     system_state.pipeline_steps[0]["status"] = "DONE"
 
-    # Шаг 2: Плавный спуск со скоростью строго 5.0 мм/с (1.0 мм каждые 0.2 с)
+    # Шаг 2: Плавный спуск со скоростью строго 5.0 мм/с (1.0 мм каждые 0.2 с) и согласованным снижением ШИМ (ревью N-C3)
     system_state.pipeline_steps[1]["status"] = "RUNNING"
+    initial_z = max(system_state.target_z, 1e-6)
+    initial_pwm = list(system_state.pwm_channels)
+    max_step = max(1, min(int(system_state.slew_rate_limit), 10))
     while system_state.target_z > 0.0:
         step_mm = min(1.0, system_state.target_z)
         system_state.target_z = round(max(system_state.target_z - step_mm, 0.0), 4)
+        ratio = system_state.target_z / initial_z
+        next_pwm = []
+        for i, cur_p in enumerate(system_state.pwm_channels):
+            desired_p = int(round(initial_pwm[i] * ratio))
+            delta = max(min(desired_p - cur_p, max_step), -max_step)
+            next_pwm.append(max(cur_p + delta, 0))
+        system_state.pwm_channels = next_pwm
+        system_state.prev_pwm_channels = list(next_pwm)
         await asyncio.sleep(0.2 * step_mm)
     system_state.z = 0.0
     system_state.pipeline_steps[1]["status"] = "DONE"
 
     # Шаг 3: Плавное гашение ШИМ катушек с соблюдением Slew-Rate <= 10 ед/тик (1.16 мс)
     system_state.pipeline_steps[2]["status"] = "RUNNING"
-    max_step = max(1, min(int(system_state.slew_rate_limit), 10))
     tick_s = 1.0 / 860.0
     while any(pwm > 0 for pwm in system_state.pwm_channels):
         next_pwm = [int(max(pwm - max_step, 0)) for pwm in system_state.pwm_channels]
@@ -1964,7 +2082,7 @@ async def get_state():
         "active_pipeline": system_state.active_pipeline,
         "safe_to_unplug": system_state.safe_to_unplug,
         "emergency_reason": system_state.emergency_reason,
-        "maintenance_logs": system_state.maintenance_logs,
+        "maintenance_logs": list(system_state.maintenance_logs),
     }
 
 class PIDTuning(BaseModel):
@@ -2099,6 +2217,8 @@ async def bist_retry(req: Union[BistRetryRequest, Dict[str, Any]]):
 
         # Пересчитываем общий статус разблокировки
         system_state.bist_unlocked = all(res == "PASS" for res in system_state.bist_results.values())
+        if system_state.bist_unlocked:
+            system_state.agent_wifi_last_seen = time.perf_counter()
     finally:
         if system_state.active_pipeline == "BIST_RETRY":
             system_state.active_pipeline = None
@@ -2127,6 +2247,7 @@ async def bist_bypass(req: BypassRequest):
             )
         system_state.bist_unlocked = True
         system_state.bist_bypass_active = True
+        system_state.agent_wifi_last_seen = time.perf_counter()
         for test_id in system_state.bist_results:
             if system_state.bist_results[test_id] != "PASS":
                 system_state.bist_results[test_id] = "BYPASSED"
@@ -2404,17 +2525,42 @@ async def mjpeg_frame_generator(max_frames: Optional[int] = None):
         await asyncio.sleep(0.060)  # ~16.7 FPS (>= 15 FPS, latency < 200 ms)
 
 
+class InspectSurfaceRequest(BaseModel):
+    tilt_angle_deg: float = Field(default=15.0, ge=0.0, le=30.0, allow_inf_nan=False)
+
+
 @app.get("/api/agent/camera_stream")
-async def camera_stream(request: Request, frames: Optional[int] = None):
-    """MJPEG Live Stream с камеры ESP32-CAM OV2640 (TASK-UI-5 / WEB-CL-11)."""
-    user_agent = request.headers.get("user-agent", "").lower()
+async def camera_stream(
+    request: Request,
+    frames: Optional[int] = None,
+    res: Optional[str] = None,
+):
+    """MJPEG Live Stream с камеры ESP32-CAM OV2640 (TASK-UI-5 / WEB-CL-11 / ревью N-A1, N-A2, N-W2)."""
+    if res in ("640x480", "1600x1200"):
+        system_state.camera_resolution = res
+    user_agent = request.headers.get("user-agent", "").strip().lower()
     effective_frames = frames
-    if effective_frames is None and ("testclient" in user_agent or "python-httpx" in user_agent):
+    if effective_frames is None and user_agent == "testclient":
         effective_frames = 3
     return StreamingResponse(
         mjpeg_frame_generator(max_frames=effective_frames),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@app.post("/api/agent/inspect_surface")
+async def inspect_surface_endpoint(req: Optional[InspectSurfaceRequest] = None):
+    """Операторский REST-вызов осмотра поверхности с наклоном сферы (ревью N-W2)."""
+    angle = req.tilt_angle_deg if req is not None else 15.0
+    detail = await tool_inspect_surface(angle)
+    if detail.startswith("REJECTED:"):
+        raise HTTPException(status_code=403, detail=detail)
+    return {
+        "status": "success",
+        "tilt_angle_deg": angle,
+        "resolution": system_state.camera_resolution,
+        "detail": detail,
+    }
 
 
 @app.post("/api/ai/clean_cache")

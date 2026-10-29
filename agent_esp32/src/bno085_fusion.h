@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* ===================================================================
  * BNO085 Sensor Fusion — ESP32-CAM Sphere Agent
@@ -80,6 +81,29 @@ bool bno085_was_bus_reset(void);
  * communication with the sensor.
  */
 void bno085_i2c_bus_reset(uint8_t sda_pin, uint8_t scl_pin);
+
+/**
+ * @brief Format Agent telemetry snapshot into a fixed-size JSON buffer
+ *        compatible with RPi 5 `AgentTelemetryMessage` (/ws/agent).
+ *
+ * Zero dynamic memory allocation (ESP-CL-2).
+ *
+ * @param data          Latest orientation sample (must be non-NULL and valid).
+ * @param battery_pct   LiPo state of charge [0.0 .. 100.0].
+ * @param coil_pwm      Current Smart-Coil PWM duty [0 .. 1023].
+ * @param qi_isolated   true when Qi relay is open ("Isolated"), false when closed ("Connected").
+ * @param rssi_dbm      Wi-Fi RSSI in dBm [-127 .. 0].
+ * @param out_buf       Destination buffer.
+ * @param buf_size      Capacity of out_buf in bytes (recommended >= 128).
+ * @return true if the JSON string fit in out_buf without truncation.
+ */
+bool bno085_format_telemetry_json(const OrientationData *data,
+                                  float battery_pct,
+                                  uint16_t coil_pwm,
+                                  bool qi_isolated,
+                                  int8_t rssi_dbm,
+                                  char *out_buf,
+                                  size_t buf_size);
 
 #ifdef __cplusplus
 }

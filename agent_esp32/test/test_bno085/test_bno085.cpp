@@ -91,6 +91,32 @@ void test_i2c_timeout_exactly_at_boundary(void) {
     TEST_ASSERT_FALSE(reset);
 }
 
+void test_telemetry_json_formatting(void) {
+    OrientationData orientation;
+    TEST_ASSERT_TRUE(bno085_test_compute_euler(1.0f, 0.0f, 0.0f, 0.0f, &orientation));
+
+    char buf[160];
+    bool ok = bno085_format_telemetry_json(&orientation, 87.5f, 320u, true, -52, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"pitch\":0.00,\"roll\":0.00,\"yaw\":0.00,\"battery\":87.5,\"coil_pwm\":320,\"relay\":\"Isolated\",\"rssi\":-52}",
+        buf
+    );
+}
+
+void test_telemetry_json_rejects_invalid_or_small_buffer(void) {
+    OrientationData orientation;
+    TEST_ASSERT_TRUE(bno085_test_compute_euler(1.0f, 0.0f, 0.0f, 0.0f, &orientation));
+
+    char tiny[16];
+    TEST_ASSERT_FALSE(bno085_format_telemetry_json(&orientation, 90.0f, 0u, false, -60, tiny, sizeof(tiny)));
+    TEST_ASSERT_FALSE(bno085_format_telemetry_json(NULL, 90.0f, 0u, false, -60, tiny, sizeof(tiny)));
+
+    orientation.valid = false;
+    char buf[160];
+    TEST_ASSERT_FALSE(bno085_format_telemetry_json(&orientation, 90.0f, 0u, false, -60, buf, sizeof(buf)));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_identity_quaternion_parsing);
@@ -100,5 +126,7 @@ int main(void) {
     RUN_TEST(test_i2c_timeout_no_reset);
     RUN_TEST(test_i2c_timeout_triggers_reset);
     RUN_TEST(test_i2c_timeout_exactly_at_boundary);
+    RUN_TEST(test_telemetry_json_formatting);
+    RUN_TEST(test_telemetry_json_rejects_invalid_or_small_buffer);
     return UNITY_END();
 }

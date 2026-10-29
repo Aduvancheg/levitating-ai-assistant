@@ -119,6 +119,9 @@
                     <span>SAFE TO UNPLUG 27W POWER ADAPTER</span>
                 </div>
                 <p class="text-[10px] text-slate-500 mt-2">Физическое отключение кабеля питания полностью безопасно. Все катушки размагничены, сфера припаркована, логика заблокирована.</p>
+                <button onclick="triggerPipeline('BIST_RUN_ALL')" class="mt-4 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg shadow-lg glow-blue transition">
+                    RE-ARM SYSTEM (RUN BIST)
+                </button>
             </div>
         </div>
     </div>
@@ -889,6 +892,10 @@
             const val = document.getElementById('operator-token-input').value.trim();
             localStorage.setItem('levitation_api_token', val);
             closeAuthTokenModal();
+            if (cameraStreamActive) {
+                const img = document.getElementById('camera-stream-img');
+                if (img) img.src = buildCameraStreamUrl();
+            }
             if (ws) {
                 ws.close();
             } else {
@@ -1473,11 +1480,18 @@
         let cameraStreamActive = true;
         let cameraHighRes = false;
 
+        function buildCameraStreamUrl() {
+            const res = cameraHighRes ? '1600x1200' : '640x480';
+            const token = getOperatorToken();
+            const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+            return `/api/agent/camera_stream?res=${res}${tokenParam}&t=${Date.now()}`;
+        }
+
         function toggleCameraStream() {
             const img = document.getElementById('camera-stream-img');
             cameraStreamActive = !cameraStreamActive;
             if (img) {
-                img.src = cameraStreamActive ? `/api/agent/camera_stream?t=${Date.now()}` : '';
+                img.src = cameraStreamActive ? buildCameraStreamUrl() : '';
             }
         }
 
@@ -1486,15 +1500,32 @@
             const res = cameraHighRes ? '1600x1200' : '640x480';
             const lbl = document.getElementById('cam-res-label');
             if (lbl) lbl.innerText = res;
+            if (cameraStreamActive) {
+                const img = document.getElementById('camera-stream-img');
+                if (img) img.src = buildCameraStreamUrl();
+            }
         }
 
         async function snapshotAndInspect() {
             const bbox = document.getElementById('ai-bbox-overlay');
+            const res = cameraHighRes ? '1600x1200' : '640x480';
             if (bbox) bbox.innerText = "AI Vision HUD: Capturing frame & analyzing surface...";
-            await refreshAIStatus();
-            if (bbox) {
-                const res = cameraHighRes ? '1600x1200' : '640x480';
-                bbox.innerText = `AI Vision HUD: Snapshot inspected (${res})`;
+            try {
+                const resp = await apiFetch('/api/agent/inspect_surface', {
+                    method: 'POST',
+                    body: JSON.stringify({ tilt_angle_deg: 15.0 })
+                });
+                const data = await resp.json();
+                await refreshAIStatus();
+                if (bbox) {
+                    if (resp.ok) {
+                        bbox.innerText = `AI Vision HUD: ${data.detail || ('Snapshot inspected (' + res + ')')}`;
+                    } else {
+                        bbox.innerText = `AI Vision HUD: ${data.detail || 'Inspect rejected'}`;
+                    }
+                }
+            } catch (err) {
+                if (bbox) bbox.innerText = `AI Vision HUD: Inspect failed (${err})`;
             }
         }
 
@@ -1582,6 +1613,10 @@
         }
 
         window.onload = () => {
+            const img = document.getElementById('camera-stream-img');
+            if (img && getOperatorToken()) {
+                img.src = buildCameraStreamUrl();
+            }
             connectWS();
             refreshAIStatus();
         };

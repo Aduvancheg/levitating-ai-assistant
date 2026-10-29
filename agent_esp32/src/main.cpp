@@ -15,6 +15,7 @@
 #if defined(ARDUINO)
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include "bno085_fusion.h"
 #include "smart_coil.h"
@@ -42,6 +43,10 @@ static const uint8_t QI_RELAY_PIN      = 13;
 /** Loop tick interval: 10 ms = 100 Hz (BNO085 max report rate). */
 static const uint32_t LOOP_INTERVAL_MS = 10;
 
+/** Telemetry transmit interval: 100 ms = 10 Hz (< 500 ms RPi5 heartbeat watchdog, review F4/N-F2). */
+static const uint32_t TELEMETRY_INTERVAL_MS = 100;
+static const uint16_t TELEMETRY_UDP_PORT    = 4211;
+
 /** I2C watchdog timeout: if no successful read for 50 ms, reset bus. */
 static const uint32_t I2C_TIMEOUT_MS   = 50;
 
@@ -67,7 +72,9 @@ static SmartCoilState coil_state;
 static AgentState     agent_state    = STATE_IDLE;
 static uint32_t       last_loop_ms   = 0;
 static uint32_t       last_imu_ok_ms = 0;
+static uint32_t       last_telem_ms  = 0;
 static OrientationData latest_orientation;
+static WiFiUDP        telemetry_udp;
 
 /* ---- Hardware Watchdog -------------------------------------------- */
 #if defined(ESP32)
@@ -222,6 +229,26 @@ void loop() {
                                latest_orientation.pitch * latest_orientation.pitch);
             if (tilt < DEADZONE_TILT_DEG) {
                 reset_software_fuse(&coil_state);
+            }
+        }
+
+        /* Periodic non-blocking telemetry dispatch to RPi 5 (review F4 / N-F2) */
+        if (latest_orientation.valid && (now - last_telem_ms >= TELEMETRY_INTERVAL_MS)) {
+            last_telem_ms = now;
+            char telem_buf[160];
+            int8_t rssi = (WiFi.status() == WL_CONNECTED) ? (int8_t)WiFi.RSSI() : -100;
+            if (bno085_format_telemetry_json(&latest_orientation,
+                                             100.0f,
+                                             coil_state.current_duty,
+                                             coil_state.qi_isolated,
+                                             rssi,
+                                             telem_buf,
+                                             sizeof(telem_buf))) {
+                if (WiFi.status() == WL_CONNECTED) {
+                    telemetry_udp.beginPacket(WiFi.gatewayIP(), TELEMETRY_UDP_PORT);
+                    telemetry_udp.write((const uint8_t *)telem_buf, strlen(telem_buf));
+                    telemetry_udp.endPacket();
+                }
             }
         }
 

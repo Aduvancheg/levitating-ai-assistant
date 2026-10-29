@@ -14,11 +14,13 @@ import sqlite3
 import tempfile
 import time
 import zipfile
+from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
+from brain_rpi5.src.core_loop import ComplementaryFilter, LevitationCoreLoop, ThermalModel
 from brain_rpi5.src.main_server import (
     system_state,
     SystemState,
@@ -62,7 +64,7 @@ def reset_state():
     system_state.agent_battery = 100.0
     system_state.agent_wifi_last_seen = time.perf_counter()
     system_state.emergency_reason = None
-    system_state.maintenance_logs = []
+    system_state.maintenance_logs = deque(maxlen=50)
     system_state.agent_pitch = 0.0
     system_state.agent_roll = 0.0
     system_state.agent_relay_status = "Connected"
@@ -78,8 +80,8 @@ def reset_state():
     system_state.ai_enabled = False
     system_state.ai_status = "DISCONNECTED"
     system_state.ai_ping_ms = 0.0
-    system_state.ai_thoughts_log = []
-    system_state.ai_chat_history = []
+    system_state.ai_thoughts_log = deque(maxlen=100)
+    system_state.ai_chat_history = deque(maxlen=200)
     system_state.audio_available = False
     system_state.audio_vad_active = False
     system_state.bist_results = {
@@ -277,25 +279,24 @@ async def test_uc_bus_07_safe_landing_wifi_loss():
 @pytest.mark.asyncio
 async def test_uc_bus_08_thermal_throttling():
     """UC-BUS-08: Coil temp >75°C → Z reduction → recovery at <55°C.
-    Verifies thermal throttling activates and deactivates correctly.
+    Verifies real ThermalModel hysteresis and LevitationCoreLoop thermal Z offset.
     """
-    system_state.coil_temp_model = 76.0
-    system_state.target_z = 25.0
+    model = ThermalModel(heating_coeff=0.05, cooling_coeff=0.001)
+    model.estimated_temp_c = 74.9
+    assert model.update(1.0, [460] * 5) is True
+    assert model.throttling is True
 
-    # Thermal throttling should activate
-    if system_state.coil_temp_model > 75.0:
-        system_state.thermal_throttling = True
-        system_state.target_z = max(system_state.target_z - 0.01, 10.0)
+    loop = LevitationCoreLoop(dry_run=True, setpoint=(0.0, 0.0, 25.0))
+    loop.state_thermal_throttling = True
+    loop._update_thermal_offset()
+    assert loop.active_setpoint[2] < 25.0
 
-    assert system_state.thermal_throttling is True
-    assert system_state.target_z < 25.0
-
-    # Cool down
-    system_state.coil_temp_model = 50.0
-    if system_state.coil_temp_model < 55.0:
-        system_state.thermal_throttling = False
-
-    assert system_state.thermal_throttling is False
+    # Hysteresis: stays throttling at 60°C, clears only below 55°C
+    model.estimated_temp_c = 60.0
+    assert model.update(0.1, [0] * 5) is True
+    model.estimated_temp_c = 54.0
+    assert model.update(0.1, [0] * 5) is False
+    assert model.throttling is False
 
 
 # =====================================================================
@@ -330,22 +331,29 @@ async def test_uc_bus_09_ota_update_in_flight():
 @pytest.mark.asyncio
 async def test_uc_bus_10_smooth_morning_boot():
     """UC-BUS-10: Silent ramp-up over 3 seconds + morning TTS brief.
-    Verifies smooth, click-free magnetic ramp.
+    Verifies real LevitationCoreLoop slew-rate limiter (<= 10 units/tick) prevents magnetic clicks.
     """
-    system_state.target_z = 0.0
-    system_state.pwm_channels = [0, 0, 0, 0, 0]
-    system_state.slew_rate_limit = 10
+    loop = LevitationCoreLoop(dry_run=True, setpoint=(0.0, 0.0, 25.0))
+    observed_duties = []
 
-    # Smooth ramp-up: 0 → 25mm in controlled steps
-    ramp_steps = 25
-    for step in range(1, ramp_steps + 1):
-        system_state.target_z = float(step)
-        await asyncio.sleep(0.01)
+    async def sensor_cb():
+        return {"hall_z_mm": 15.0, "tof_xyz": (0.0, 0.0, 15.0)}
 
-    assert system_state.target_z == 25.0
+    orig_send = loop._send_packet
 
-    # Verify slew rate limiter is engaged (no sudden jumps)
-    assert system_state.slew_rate_limit == 10
+    def spy_send(duties):
+        observed_duties.append(list(duties))
+        orig_send(duties)
+
+    loop._send_packet = spy_send
+    await loop.run(sensor_cb, max_iterations=5)
+
+    assert len(observed_duties) == 5
+    prev = [0, 0, 0, 0, 0]
+    for step_duties in observed_duties:
+        for p, c in zip(prev, step_duties):
+            assert abs(c - p) <= loop.MAX_PWM_STEP_PER_TICK
+        prev = step_duties
 
 
 # =====================================================================
@@ -353,24 +361,31 @@ async def test_uc_bus_10_smooth_morning_boot():
 # =====================================================================
 @pytest.mark.asyncio
 async def test_uc_bus_11_solar_glare_filter():
-    """UC-BUS-11: Anomaly jump filter rejects de/dt > 400 spikes.
-    Verifies sigmoidal filter prevents PID disruption from ToF glare.
-    """
-    normal_reading = 25.0
-    glare_reading = 425.0  # Anomalous spike
+    """UC-BUS-11: Real ComplementaryFilter & LevitationCoreLoop velocity lock reject solar glare spikes."""
+    comp = ComplementaryFilter(steepness=0.5)
+    # Establish normal hover at 20mm, then inject a sudden ToF solar glare spike (425mm)
+    assert comp.fuse(hall_z_mm=20.0, tof_z_mm=20.0) == 20.0
+    fused = comp.fuse(hall_z_mm=20.0, tof_z_mm=425.0)
+    assert fused is not None
+    assert abs(fused - 20.0) < 0.01
 
-    # Calculate de/dt
-    de_dt = abs(glare_reading - normal_reading)
-    ANOMALY_THRESHOLD = 400.0
+    # Velocity jump > MAX_DZ_DT (2000 mm/s) triggers physical lock in LevitationCoreLoop
+    loop = LevitationCoreLoop(dry_run=True, setpoint=(0.0, 0.0, 25.0))
+    readings = [
+        {"hall_z_mm": 25.0, "tof_xyz": (0.0, 0.0, 25.0)},
+        {"hall_z_mm": 425.0, "tof_xyz": (0.0, 0.0, 425.0)},
+    ]
+    idx = 0
 
-    # Filter should reject this reading (de/dt >= threshold)
-    if de_dt >= ANOMALY_THRESHOLD:
-        filtered_reading = normal_reading  # Keep previous value
-    else:
-        filtered_reading = glare_reading
+    async def glare_cb():
+        nonlocal idx
+        val = readings[min(idx, len(readings) - 1)]
+        idx += 1
+        return val
 
-    assert filtered_reading == normal_reading
-    assert de_dt >= ANOMALY_THRESHOLD
+    await loop.run(glare_cb, max_iterations=2)
+    assert loop.state_physical_lock is True
+    assert loop._last_duties == [0, 0, 0, 0, 0]
 
 
 # =====================================================================

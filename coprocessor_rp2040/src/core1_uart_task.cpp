@@ -42,7 +42,15 @@ static uint32_t s_last_consumed_seq = 0;
   #endif
 #endif
 
-/* ---- Mailbox implementation (single-writer seqlock, review F5) ---- */
+/* ---- Mailbox implementation (single-writer seqlock, review F5 / N-F1) ---- */
+
+static void volatile_copy_packet(volatile void *dst, const volatile void *src) {
+    volatile uint8_t *d = (volatile uint8_t *)dst;
+    const volatile uint8_t *s = (const volatile uint8_t *)src;
+    for (size_t i = 0; i < sizeof(PacketData); i++) {
+        d[i] = s[i];
+    }
+}
 
 void mailbox_init(void) {
     memset(&g_packet_mailbox.packet, 0, sizeof(PacketData));
@@ -62,7 +70,7 @@ void mailbox_produce(const PacketData *packet) {
     g_packet_mailbox.seq++;
     MEMORY_BARRIER();
 
-    g_packet_mailbox.packet = *packet;
+    volatile_copy_packet(&g_packet_mailbox.packet, packet);
     MEMORY_BARRIER();
 
     /* Even sequence number signals stable snapshot */
@@ -90,7 +98,8 @@ bool mailbox_consume(PacketData *out_packet) {
         }
 
         MEMORY_BARRIER();
-        PacketData snapshot = g_packet_mailbox.packet;
+        PacketData snapshot;
+        volatile_copy_packet(&snapshot, &g_packet_mailbox.packet);
         MEMORY_BARRIER();
 
         uint32_t s2 = g_packet_mailbox.seq;
