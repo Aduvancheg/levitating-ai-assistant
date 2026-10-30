@@ -198,6 +198,11 @@ def test_camera_stream_http_endpoint_and_hud_ui(client: TestClient):
     assert "roll-val" in html
     assert "z-val" in html
     assert "Clean Temp Cache" in html
+    assert "ANTIGRAVITY // CONTROL CENTER V12" in html
+    assert "CORE: 860 Hz ACTIVE" in html
+    assert "wifi-status" in html
+    assert "ai-logs" in html
+    assert "[SYSTEM V12 INITIALIZED] Ready for Voice &amp; Vision Interaction." in html
 
 
 # =====================================================================

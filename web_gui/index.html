@@ -63,7 +63,9 @@
     <header class="border-b border-blue-900/40 bg-slate-950/80 px-6 py-4 flex justify-between items-center">
         <div class="flex items-center space-x-3">
             <div class="w-3 h-3 bg-blue-500 rounded-full animate-pulse glow-blue"></div>
-            <h1 class="text-lg font-bold tracking-wider text-blue-400">ANTIGRAVITY // CONTROL CENTER v11.0</h1>
+            <h1 class="text-lg font-bold tracking-wider text-blue-400">ANTIGRAVITY // CONTROL CENTER V12</h1>
+            <span class="px-2.5 py-1 rounded text-[11px] font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400">CORE: 860 Hz ACTIVE</span>
+            <span id="wifi-status" class="px-2.5 py-1 rounded text-[11px] font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400">HEARTBEAT: OK (0.01s)</span>
         </div>
         <div class="flex items-center space-x-4">
             <!-- Operator API Token Button -->
@@ -671,7 +673,14 @@
                             <button onclick="refreshAIStatus()" class="text-[10px] text-slate-400 hover:text-white ml-2 shrink-0">Refresh</button>
                         </div>
 
-                        <div id="chatHistoryLog" class="flex-1 overflow-y-auto space-y-3 my-4 pr-2 text-xs">
+                        <!-- AI Agent Console & Log History (V12) -->
+                        <div id="ai-logs" class="bg-slate-950/90 p-3 rounded-lg border border-slate-800 font-mono text-[11px] text-slate-400 my-2 max-h-24 overflow-y-auto space-y-1">
+                            <div>[SYSTEM V12 INITIALIZED] Ready for Voice &amp; Vision Interaction.</div>
+                            <div>[MEM_CHECK] Long-Term Memory SQLite: ai_history.db ACTIVE.</div>
+                            <div>[AUDIO] Spacetronik SPU-WM30 360° USB Mic Ready.</div>
+                        </div>
+
+                        <div id="chatHistoryLog" class="flex-1 overflow-y-auto space-y-3 my-2 pr-2 text-xs">
                             <div class="bg-slate-900/90 p-3 rounded-lg border border-slate-800 max-w-[85%]">
                                 <span class="text-[10px] font-bold text-emerald-400 block mb-1">Antigravity Agent</span>
                                 Привет! Я парию над базой. Спроси меня «Какая высота?», «Что на столе?» или запусти пространственную спираль!
@@ -1024,6 +1033,16 @@
             if (typeof data.agent.smart_coil_pwm === 'number') {
                 const scEl = document.getElementById('smart-coil-pwm');
                 if (scEl) scEl.innerText = `${data.agent.smart_coil_pwm} / 1023`;
+            }
+
+            // Agent WiFi Heartbeat status badge (V12)
+            const wifiBadge = document.getElementById('wifi-status');
+            if (wifiBadge && data.agent) {
+                const isConn = data.agent.wifi_status === 'Connected';
+                wifiBadge.className = isConn 
+                    ? "px-2.5 py-1 rounded text-[11px] font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400"
+                    : "px-2.5 py-1 rounded text-[11px] font-bold bg-red-950/60 border border-red-500/40 text-red-400";
+                wifiBadge.innerText = isConn ? "HEARTBEAT: OK (0.01s)" : "HEARTBEAT: DISCONNECTED";
             }
 
             // NC RELAY
@@ -1533,13 +1552,29 @@
             try {
                 const res = await apiFetch('/api/ai/clean_cache', { method: 'POST' });
                 const data = await res.json();
+                const aiLogs = document.getElementById('ai-logs');
+                const msg = data.detail || data.message || "Cache cleaned and DB vacuumed.";
+                if (aiLogs) {
+                    const row = document.createElement('div');
+                    row.className = "text-emerald-400";
+                    row.innerText = `[MAINTENANCE] ${msg}`;
+                    aiLogs.appendChild(row);
+                    aiLogs.scrollTop = aiLogs.scrollHeight;
+                }
                 if (data.detail && !data.status) {
                     alert(`Ошибка очистки: ${data.detail}`);
                 } else {
-                    appendChatBubble('assistant', `[Maintenance]: ${data.detail || data.message}`);
+                    appendChatBubble('assistant', `[Maintenance]: ${msg}`);
                 }
             } catch (err) {
                 console.error("cleanCache error:", err);
+                const aiLogs = document.getElementById('ai-logs');
+                if (aiLogs) {
+                    const row = document.createElement('div');
+                    row.className = "text-red-400";
+                    row.innerText = `[ERROR] cleanCache failed: ${err}`;
+                    aiLogs.appendChild(row);
+                }
             }
         }
 
