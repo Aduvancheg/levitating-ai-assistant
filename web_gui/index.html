@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,34 +11,42 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+
         body {
             font-family: 'JetBrains Mono', monospace;
             background-color: #020617;
         }
+
         .glass-panel {
             background: rgba(15, 23, 42, 0.75);
             backdrop-filter: blur(12px);
             border: 1px solid rgba(59, 130, 246, 0.2);
             box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.5);
         }
+
         .glow-blue {
             box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
         }
+
         .glow-green {
             box-shadow: 0 0 20px rgba(16, 185, 129, 0.6);
         }
+
         .glow-red {
             box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
         }
+
         .glow-amber {
             box-shadow: 0 0 20px rgba(245, 158, 11, 0.6);
         }
+
         /* 3D Sphere Container styles */
         .scene {
             width: 150px;
             height: 150px;
             perspective: 600px;
         }
+
         .sphere {
             width: 100%;
             height: 100%;
@@ -45,6 +54,7 @@
             transform-style: preserve-3d;
             transition: transform 0.1s linear;
         }
+
         .sphere-ring {
             position: absolute;
             width: 100%;
@@ -52,33 +62,52 @@
             border: 2px solid rgba(59, 130, 246, 0.6);
             border-radius: 50%;
         }
-        .ring-x { transform: rotateY(0deg); }
-        .ring-y { transform: rotateX(90deg); }
-        .ring-z { transform: rotateY(90deg); }
+
+        .ring-x {
+            transform: rotateY(0deg);
+        }
+
+        .ring-y {
+            transform: rotateX(90deg);
+        }
+
+        .ring-z {
+            transform: rotateY(90deg);
+        }
     </style>
 </head>
+
 <body class="text-slate-100 min-h-screen flex flex-col">
 
     <!-- HEADER -->
     <header class="border-b border-blue-900/40 bg-slate-950/80 px-6 py-4 flex justify-between items-center">
         <div class="flex items-center space-x-3">
             <div class="w-3 h-3 bg-blue-500 rounded-full animate-pulse glow-blue"></div>
+            <h1 class="text-lg font-bold tracking-wider text-blue-400">ANTIGRAVITY // CONTROL CENTER v11.0</h1>
             <h1 class="text-lg font-bold tracking-wider text-blue-400">ANTIGRAVITY // CONTROL CENTER V12</h1>
-            <span class="px-2.5 py-1 rounded text-[11px] font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400">CORE: 860 Hz ACTIVE</span>
-            <span id="wifi-status" class="px-2.5 py-1 rounded text-[11px] font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400">HEARTBEAT: OK (0.01s)</span>
+            <span
+                class="px-2.5 py-1 rounded text-[11px] font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400">CORE:
+                860 Hz ACTIVE</span>
+            <span id="wifi-status"
+                class="px-2.5 py-1 rounded text-[11px] font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400">HEARTBEAT:
+                OK (0.01s)</span>
         </div>
         <div class="flex items-center space-x-4">
             <!-- Operator API Token Button -->
-            <button onclick="openAuthTokenModal()" class="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-blue-500 text-slate-300 text-xs font-bold rounded tracking-wider transition flex items-center space-x-1.5" title="Operator Bearer Token">
+            <button onclick="openAuthTokenModal()"
+                class="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-blue-500 text-slate-300 text-xs font-bold rounded tracking-wider transition flex items-center space-x-1.5"
+                title="Operator Bearer Token">
                 <i data-lucide="key-round" class="w-3.5 h-3.5 text-blue-400"></i>
                 <span id="auth-token-btn-label">API TOKEN</span>
             </button>
             <!-- AI Status Pill -->
-            <div id="header-ai-badge" class="px-3 py-1 rounded-full text-[11px] font-bold bg-slate-900 text-slate-400 border border-slate-700">
+            <div id="header-ai-badge"
+                class="px-3 py-1 rounded-full text-[11px] font-bold bg-slate-900 text-slate-400 border border-slate-700">
                 AI: DISCONNECTED
             </div>
             <!-- Safe Shutdown Emergency Button -->
-            <button onclick="confirmShutdown()" class="px-3.5 py-1.5 bg-red-950/40 hover:bg-red-600 border border-red-700 hover:border-red-500 hover:glow-red text-red-400 hover:text-white text-xs font-bold rounded tracking-wider transition duration-300 flex items-center space-x-1.5">
+            <button onclick="confirmShutdown()"
+                class="px-3.5 py-1.5 bg-red-950/40 hover:bg-red-600 border border-red-700 hover:border-red-500 hover:glow-red text-red-400 hover:text-white text-xs font-bold rounded tracking-wider transition duration-300 flex items-center space-x-1.5">
                 <i data-lucide="power" class="w-3.5 h-3.5"></i>
                 <span>TURN OFF</span>
             </button>
@@ -98,30 +127,38 @@
     </header>
 
     <!-- FULLSCREEN SAFE SHUTDOWN OVERLAY -->
-    <div id="shutdown-overlay" class="fixed inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex items-center justify-center hidden">
+    <div id="shutdown-overlay"
+        class="fixed inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex items-center justify-center hidden">
         <div class="glass-panel max-w-lg w-full p-8 rounded-2xl border-red-900/50 space-y-6 text-center glow-red">
             <div class="flex justify-center">
-                <div class="p-4 bg-red-950/30 rounded-full border border-red-800 animate-pulse animate-bounce" id="shutdown-icon-container">
+                <div class="p-4 bg-red-950/30 rounded-full border border-red-800 animate-pulse animate-bounce"
+                    id="shutdown-icon-container">
                     <i data-lucide="power" class="w-12 h-12 text-red-500"></i>
                 </div>
             </div>
             <div class="space-y-2">
-                <h2 class="text-xl font-bold tracking-wider text-red-400" id="shutdown-title">SAFE POWER-DOWN PIPELINE ACTIVE</h2>
-                <p class="text-xs text-slate-500" id="shutdown-desc">Выполняются безопасные асинхронные процедуры отключения комплекса.</p>
+                <h2 class="text-xl font-bold tracking-wider text-red-400" id="shutdown-title">SAFE POWER-DOWN PIPELINE
+                    ACTIVE</h2>
+                <p class="text-xs text-slate-500" id="shutdown-desc">Выполняются безопасные асинхронные процедуры
+                    отключения комплекса.</p>
             </div>
-            
+
             <!-- Steps Progress List -->
-            <div class="space-y-3.5 text-left bg-slate-950 p-4 rounded-xl border border-slate-900" id="shutdown-steps-list">
+            <div class="space-y-3.5 text-left bg-slate-950 p-4 rounded-xl border border-slate-900"
+                id="shutdown-steps-list">
                 <!-- Will be dynamically updated by WebSocket -->
             </div>
-            
+
             <div class="hidden pt-4 border-t border-slate-900" id="shutdown-unplug-notice">
-                <div class="flex items-center justify-center space-x-2 text-emerald-400 font-bold text-sm animate-bounce">
+                <div
+                    class="flex items-center justify-center space-x-2 text-emerald-400 font-bold text-sm animate-bounce">
                     <i data-lucide="unplug" class="w-5 h-5"></i>
                     <span>SAFE TO UNPLUG 27W POWER ADAPTER</span>
                 </div>
-                <p class="text-[10px] text-slate-500 mt-2">Физическое отключение кабеля питания полностью безопасно. Все катушки размагничены, сфера припаркована, логика заблокирована.</p>
-                <button onclick="triggerPipeline('BIST_RUN_ALL')" class="mt-4 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg shadow-lg glow-blue transition">
+                <p class="text-[10px] text-slate-500 mt-2">Физическое отключение кабеля питания полностью безопасно. Все
+                    катушки размагничены, сфера припаркована, логика заблокирована.</p>
+                <button onclick="triggerPipeline('BIST_RUN_ALL')"
+                    class="mt-4 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg shadow-lg glow-blue transition">
                     RE-ARM SYSTEM (RUN BIST)
                 </button>
             </div>
@@ -130,28 +167,34 @@
 
     <!-- MAIN CONTENT -->
     <main class="flex-1 max-w-[1600px] w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
+
         <!-- LEFT PANEL: TABS & VIEWS (8 columns) -->
         <section class="lg:col-span-8 flex flex-col space-y-6">
-            
+
             <!-- TAB SELECTOR -->
             <div class="flex flex-wrap gap-1.5 p-1 bg-slate-900/60 rounded-lg border border-slate-800">
-                <button onclick="switchTab('base')" id="tab-btn-base" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 bg-blue-600 text-white shadow-lg glow-blue">
+                <button onclick="switchTab('base')" id="tab-btn-base"
+                    class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 bg-blue-600 text-white shadow-lg glow-blue">
                     <i data-lucide="hard-drive" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #1 Base Telemetry
                 </button>
-                <button onclick="switchTab('agent')" id="tab-btn-agent" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                <button onclick="switchTab('agent')" id="tab-btn-agent"
+                    class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
                     <i data-lucide="orbit" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #2 Agent Telemetry
                 </button>
-                <button onclick="switchTab('manage')" id="tab-btn-manage" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                <button onclick="switchTab('manage')" id="tab-btn-manage"
+                    class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
                     <i data-lucide="play-circle" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #3 Task Manager
                 </button>
-                <button onclick="switchTab('bist')" id="tab-btn-bist" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                <button onclick="switchTab('bist')" id="tab-btn-bist"
+                    class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
                     <i data-lucide="activity" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #4 BIST Diagnostics
                 </button>
-                <button onclick="switchTab('pa')" id="tab-btn-pa" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                <button onclick="switchTab('pa')" id="tab-btn-pa"
+                    class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
                     <i data-lucide="shield-check" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #5 Post-Assembly
                 </button>
-                <button onclick="switchTab('ai')" id="tab-btn-ai" class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+                <button onclick="switchTab('ai')" id="tab-btn-ai"
+                    class="flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800">
                     <i data-lucide="bot" class="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5"></i> #6 AI Assistant
                 </button>
             </div>
@@ -161,7 +204,8 @@
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <!-- Target Z and complementary Fusion -->
                     <div class="glass-panel rounded-xl p-5 space-y-4">
-                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">3D POSITION COMPLEMENTARY FUSION</h3>
+                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">3D POSITION
+                            COMPLEMENTARY FUSION</h3>
                         <div class="flex justify-between items-center">
                             <span class="text-xs text-slate-400">Fusion Height (Z):</span>
                             <span class="text-2xl font-bold text-green-400" id="base-z">0.00 mm</span>
@@ -172,7 +216,9 @@
                                 <span>ToF Range (5cm+)</span>
                             </div>
                             <div class="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
-                                <div id="fusion-weight-bar" class="bg-gradient-to-r from-blue-500 to-green-500 h-full transition-all duration-100" style="width: 50%"></div>
+                                <div id="fusion-weight-bar"
+                                    class="bg-gradient-to-r from-blue-500 to-green-500 h-full transition-all duration-100"
+                                    style="width: 50%"></div>
                             </div>
                         </div>
                         <div class="grid grid-cols-2 gap-4 pt-2">
@@ -193,7 +239,8 @@
 
                     <!-- Base Coils Duty Cycle -->
                     <div class="glass-panel rounded-xl p-5 space-y-3">
-                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BASE COILS HARMONIC DRIVERS (PWM 25kHz)</h3>
+                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BASE COILS HARMONIC
+                            DRIVERS (PWM 25kHz)</h3>
                         <div class="space-y-2.5" id="coils-container">
                             <!-- Loop over 5 coils -->
                             <div>
@@ -202,7 +249,8 @@
                                     <span class="text-blue-400" id="coil-pwm-0">0 / 460</span>
                                 </div>
                                 <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
-                                    <div id="coil-bar-0" class="bg-blue-500 h-full transition-all duration-100" style="width: 0%"></div>
+                                    <div id="coil-bar-0" class="bg-blue-500 h-full transition-all duration-100"
+                                        style="width: 0%"></div>
                                 </div>
                             </div>
                             <div>
@@ -211,7 +259,8 @@
                                     <span class="text-blue-400" id="coil-pwm-1">0 / 460</span>
                                 </div>
                                 <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
-                                    <div id="coil-bar-1" class="bg-slate-700 h-full transition-all duration-100" style="width: 0%"></div>
+                                    <div id="coil-bar-1" class="bg-slate-700 h-full transition-all duration-100"
+                                        style="width: 0%"></div>
                                 </div>
                             </div>
                             <div>
@@ -220,7 +269,8 @@
                                     <span class="text-blue-400" id="coil-pwm-2">0 / 460</span>
                                 </div>
                                 <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
-                                    <div id="coil-bar-2" class="bg-slate-700 h-full transition-all duration-100" style="width: 0%"></div>
+                                    <div id="coil-bar-2" class="bg-slate-700 h-full transition-all duration-100"
+                                        style="width: 0%"></div>
                                 </div>
                             </div>
                             <div>
@@ -229,7 +279,8 @@
                                     <span class="text-blue-400" id="coil-pwm-3">0 / 460</span>
                                 </div>
                                 <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
-                                    <div id="coil-bar-3" class="bg-slate-700 h-full transition-all duration-100" style="width: 0%"></div>
+                                    <div id="coil-bar-3" class="bg-slate-700 h-full transition-all duration-100"
+                                        style="width: 0%"></div>
                                 </div>
                             </div>
                             <div>
@@ -238,7 +289,8 @@
                                     <span class="text-blue-400" id="coil-pwm-4">0 / 460</span>
                                 </div>
                                 <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
-                                    <div id="coil-bar-4" class="bg-slate-700 h-full transition-all duration-100" style="width: 0%"></div>
+                                    <div id="coil-bar-4" class="bg-slate-700 h-full transition-all duration-100"
+                                        style="width: 0%"></div>
                                 </div>
                             </div>
                         </div>
@@ -252,7 +304,8 @@
                     <!-- BNO085 Angles & 3D visualization -->
                     <div class="glass-panel rounded-xl p-5 flex flex-col justify-between space-y-4">
                         <div>
-                            <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BNO085 PRECISION SPATIAL ORIENTATION</h3>
+                            <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BNO085 PRECISION
+                                SPATIAL ORIENTATION</h3>
                             <div class="grid grid-cols-3 gap-2 mt-4">
                                 <div class="bg-slate-950/80 p-2.5 rounded-lg text-center border border-slate-900">
                                     <div class="text-[10px] text-slate-500">PITCH</div>
@@ -283,8 +336,9 @@
 
                     <!-- Board Stats: Battery, NC-Relay, Smart Coil -->
                     <div class="glass-panel rounded-xl p-5 space-y-5">
-                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BOM STATE & HARDWARE INTRUSION</h3>
-                        
+                        <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">BOM STATE & HARDWARE
+                            INTRUSION</h3>
+
                         <!-- Battery -->
                         <div class="space-y-2">
                             <div class="flex justify-between items-center text-xs">
@@ -292,7 +346,8 @@
                                 <span class="font-bold text-green-400" id="agent-battery">100% (4.2V)</span>
                             </div>
                             <div class="w-full bg-slate-950 h-3 rounded-full overflow-hidden border border-slate-800">
-                                <div id="battery-bar" class="bg-green-500 h-full transition-all duration-300" style="width: 100%"></div>
+                                <div id="battery-bar" class="bg-green-500 h-full transition-all duration-300"
+                                    style="width: 100%"></div>
                             </div>
                         </div>
 
@@ -302,7 +357,8 @@
                                 <span class="text-[10px] text-slate-500 uppercase block">Qi Charger Isolator</span>
                                 <div class="flex items-center space-x-2 mt-1">
                                     <span class="w-2.5 h-2.5 rounded-full bg-green-500" id="relay-indicator"></span>
-                                    <span class="text-xs font-bold text-slate-300" id="relay-status">CLOSED (Charging)</span>
+                                    <span class="text-xs font-bold text-slate-300" id="relay-status">CLOSED
+                                        (Charging)</span>
                                 </div>
                             </div>
                             <!-- Smart Coil Duty -->
@@ -318,31 +374,43 @@
             <!-- TAB 3: TASK & PIPELINE MANAGER -->
             <div id="tab-content-manage" class="space-y-6 hidden">
                 <div class="glass-panel rounded-xl p-5 space-y-4">
-                    <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">AUTOMATED R&D SYSTEM PIPELINES</h3>
+                    <h3 class="text-sm font-bold text-blue-400 border-b border-slate-800 pb-2">AUTOMATED R&D SYSTEM
+                        PIPELINES</h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <!-- Pipeline 0: Calibration Wizard -->
-                        <div class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center hover:border-cyan-900/50 transition">
+                        <div
+                            class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center hover:border-cyan-900/50 transition">
                             <div class="space-y-1">
                                 <h4 class="text-sm font-bold text-cyan-400">Calibration & Takeoff Wizard</h4>
-                                <p class="text-[10px] text-slate-500">Interactive Split Cradle Calibration FSM v10.0.</p>
+                                <p class="text-[10px] text-slate-500">Interactive Split Cradle Calibration FSM v10.0.
+                                </p>
                             </div>
-                            <button onclick="openCalibrationWizard()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded">WIZARD</button>
+                            <button onclick="openCalibrationWizard()"
+                                class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded">WIZARD</button>
                         </div>
                         <!-- Pipeline 1: Takeoff -->
-                        <div class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center hover:border-blue-900/50 transition">
+                        <div
+                            class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center hover:border-blue-900/50 transition">
                             <div class="space-y-1">
                                 <h4 class="text-sm font-bold">Smooth Takeoff (Z-Lift)</h4>
-                                <p class="text-[10px] text-slate-500">Gradual electromagnetic current ascent to safely hover the sphere.</p>
+                                <p class="text-[10px] text-slate-500">Gradual electromagnetic current ascent to safely
+                                    hover the sphere.</p>
                             </div>
-                            <button id="btn-takeoff" onclick="triggerPipeline('SMOOTH_TAKEOFF')" class="px-4 py-2 bg-slate-800 text-slate-500 text-xs font-bold rounded cursor-not-allowed" disabled>LOCKED</button>
+                            <button id="btn-takeoff" onclick="triggerPipeline('SMOOTH_TAKEOFF')"
+                                class="px-4 py-2 bg-slate-800 text-slate-500 text-xs font-bold rounded cursor-not-allowed"
+                                disabled>LOCKED</button>
                         </div>
                         <!-- Pipeline 2: Helix Demonstration -->
-                        <div class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center hover:border-blue-900/50 transition">
+                        <div
+                            class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center hover:border-blue-900/50 transition">
                             <div class="space-y-1">
                                 <h4 class="text-sm font-bold">3D Spatial Helix Demo</h4>
-                                <p class="text-[10px] text-slate-500">Commands Agent to fly dynamic ascending spatial spiral orbits.</p>
+                                <p class="text-[10px] text-slate-500">Commands Agent to fly dynamic ascending spatial
+                                    spiral orbits.</p>
                             </div>
-                            <button id="btn-helix" onclick="triggerPipeline('SPATIAL_HELIX')" class="px-4 py-2 bg-slate-800 text-slate-500 text-xs font-bold rounded cursor-not-allowed" disabled>LOCKED</button>
+                            <button id="btn-helix" onclick="triggerPipeline('SPATIAL_HELIX')"
+                                class="px-4 py-2 bg-slate-800 text-slate-500 text-xs font-bold rounded cursor-not-allowed"
+                                disabled>LOCKED</button>
                         </div>
                     </div>
                 </div>
@@ -352,9 +420,12 @@
                     <div class="flex justify-between items-center border-b border-slate-800 pb-2">
                         <div class="flex items-center space-x-2">
                             <i data-lucide="loader" class="w-4 h-4 text-blue-500 animate-spin"></i>
-                            <h3 class="text-sm font-bold text-blue-400">ACTIVE PIPELINE: <span id="pipeline-title">NONE</span></h3>
+                            <h3 class="text-sm font-bold text-blue-400">ACTIVE PIPELINE: <span
+                                    id="pipeline-title">NONE</span></h3>
                         </div>
-                        <span class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-950 text-blue-400 border border-blue-800" id="pipeline-general-status">RUNNING</span>
+                        <span
+                            class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-950 text-blue-400 border border-blue-800"
+                            id="pipeline-general-status">RUNNING</span>
                     </div>
                     <div class="flex flex-col space-y-3.5" id="pipeline-steps-container"></div>
                 </div>
@@ -366,14 +437,17 @@
                     <div class="flex justify-between items-center border-b border-slate-800 pb-2">
                         <div>
                             <h3 class="text-sm font-bold text-blue-400">BUILT-IN SELF-TEST (BIST) DIAGNOSTIC CENTER</h3>
-                            <p class="text-[10px] text-slate-500">Пошаговое автоматическое тестирование целостности аппаратного слоя базы и сферы Агента.</p>
+                            <p class="text-[10px] text-slate-500">Пошаговое автоматическое тестирование целостности
+                                аппаратного слоя базы и сферы Агента.</p>
                         </div>
                         <div class="flex space-x-2">
                             <!-- Bypass Manual Override -->
-                            <button onclick="openBypassModal()" class="px-3.5 py-2.5 bg-amber-950/40 hover:bg-amber-600 border border-amber-800 hover:border-amber-500 hover:glow-amber text-amber-400 hover:text-white text-xs font-bold rounded transition flex items-center space-x-1.5">
+                            <button onclick="openBypassModal()"
+                                class="px-3.5 py-2.5 bg-amber-950/40 hover:bg-amber-600 border border-amber-800 hover:border-amber-500 hover:glow-amber text-amber-400 hover:text-white text-xs font-bold rounded transition flex items-center space-x-1.5">
                                 <i data-lucide="shield-alert" class="w-4 h-4"></i><span>Bypass Interlock</span>
                             </button>
-                            <button onclick="triggerPipeline('BIST_RUN_ALL')" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded shadow-lg glow-blue transition flex items-center space-x-1.5">
+                            <button onclick="triggerPipeline('BIST_RUN_ALL')"
+                                class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded shadow-lg glow-blue transition flex items-center space-x-1.5">
                                 <i data-lucide="play" class="w-4 h-4"></i><span>RUN AUTO-DIAGNOSTICS</span>
                             </button>
                         </div>
@@ -383,95 +457,135 @@
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <!-- Card 1 -->
                         <div class="space-y-2">
-                            <div onclick="toggleLogDrawer('BIST-HW-01')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="toggleLogDrawer('BIST-HW-01')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-01</span>
                                     <h4 class="text-xs font-bold">PWM Sweep Loopback Self-Test</h4>
-                                    <p class="text-[10px] text-slate-400">Подает ток на затворы и проверяет отклик магнитных полей на ADS1115.</p>
+                                    <p class="text-[10px] text-slate-400">Подает ток на затворы и проверяет отклик
+                                        магнитных полей на ADS1115.</p>
                                 </div>
                                 <div class="flex items-center space-x-3">
-                                    <span id="bist-res-BIST-HW-01" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
-                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-01')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-01">Retry</button>
-                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-01"></i>
+                                    <span id="bist-res-BIST-HW-01"
+                                        class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-01')"
+                                        class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden"
+                                        id="bist-retry-BIST-HW-01">Retry</button>
+                                    <i data-lucide="chevron-down"
+                                        class="w-4 h-4 text-slate-500 transition-transform duration-200"
+                                        id="bist-arrow-BIST-HW-01"></i>
                                 </div>
                             </div>
-                            <div id="bist-log-BIST-HW-01" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                            <div id="bist-log-BIST-HW-01"
+                                class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
                                 Логи пусты.
                             </div>
                         </div>
-                        
+
                         <!-- Card 2 -->
                         <div class="space-y-2">
-                            <div onclick="toggleLogDrawer('BIST-HW-02')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="toggleLogDrawer('BIST-HW-02')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-02</span>
                                     <h4 class="text-xs font-bold">Automated Polarity Phase Check</h4>
-                                    <p class="text-[10px] text-slate-400">Проверяет правильность направления намотки катушек базы ($\\Delta V > 0$).</p>
+                                    <p class="text-[10px] text-slate-400">Проверяет правильность направления намотки
+                                        катушек базы ($\\Delta V > 0$).</p>
                                 </div>
                                 <div class="flex items-center space-x-3">
-                                    <span id="bist-res-BIST-HW-02" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
-                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-02')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-02">Retry</button>
-                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-02"></i>
+                                    <span id="bist-res-BIST-HW-02"
+                                        class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-02')"
+                                        class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden"
+                                        id="bist-retry-BIST-HW-02">Retry</button>
+                                    <i data-lucide="chevron-down"
+                                        class="w-4 h-4 text-slate-500 transition-transform duration-200"
+                                        id="bist-arrow-BIST-HW-02"></i>
                                 </div>
                             </div>
-                            <div id="bist-log-BIST-HW-02" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                            <div id="bist-log-BIST-HW-02"
+                                class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
                                 Логи пусты.
                             </div>
                         </div>
 
                         <!-- Card 3 -->
                         <div class="space-y-2">
-                            <div onclick="toggleLogDrawer('BIST-HW-03')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="toggleLogDrawer('BIST-HW-03')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-03</span>
                                     <h4 class="text-xs font-bold">Agent NC-Relay safety interlock</h4>
-                                    <p class="text-[10px] text-slate-400">Проверяет срабатывание размыкателя Qi-приемника за $5$ мс до импульса катушки.</p>
+                                    <p class="text-[10px] text-slate-400">Проверяет срабатывание размыкателя
+                                        Qi-приемника за $5$ мс до импульса катушки.</p>
                                 </div>
                                 <div class="flex items-center space-x-3">
-                                    <span id="bist-res-BIST-HW-03" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
-                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-03')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-03">Retry</button>
-                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-03"></i>
+                                    <span id="bist-res-BIST-HW-03"
+                                        class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-03')"
+                                        class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden"
+                                        id="bist-retry-BIST-HW-03">Retry</button>
+                                    <i data-lucide="chevron-down"
+                                        class="w-4 h-4 text-slate-500 transition-transform duration-200"
+                                        id="bist-arrow-BIST-HW-03"></i>
                                 </div>
                             </div>
-                            <div id="bist-log-BIST-HW-03" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                            <div id="bist-log-BIST-HW-03"
+                                class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
                                 Логи пусты.
                             </div>
                         </div>
 
                         <!-- Card 4 -->
                         <div class="space-y-2">
-                            <div onclick="toggleLogDrawer('BIST-HW-04')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="toggleLogDrawer('BIST-HW-04')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-04</span>
                                     <h4 class="text-xs font-bold">EMI Ground Noise Floor Scanner</h4>
-                                    <p class="text-[10px] text-slate-400">Тестирует уровень пульсаций силовой земли \"Звезда\" при максимальном токе катушек.</p>
+                                    <p class="text-[10px] text-slate-400">Тестирует уровень пульсаций силовой земли
+                                        \"Звезда\" при максимальном токе катушек.</p>
                                 </div>
                                 <div class="flex items-center space-x-3">
-                                    <span id="bist-res-BIST-HW-04" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
-                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-04')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-04">Retry</button>
-                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-04"></i>
+                                    <span id="bist-res-BIST-HW-04"
+                                        class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-04')"
+                                        class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden"
+                                        id="bist-retry-BIST-HW-04">Retry</button>
+                                    <i data-lucide="chevron-down"
+                                        class="w-4 h-4 text-slate-500 transition-transform duration-200"
+                                        id="bist-arrow-BIST-HW-04"></i>
                                 </div>
                             </div>
-                            <div id="bist-log-BIST-HW-04" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                            <div id="bist-log-BIST-HW-04"
+                                class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
                                 Логи пусты.
                             </div>
                         </div>
 
                         <!-- BIST-HW-05: Lenz Protection -->
                         <div class="space-y-1">
-                            <div onclick="toggleLogDrawer('BIST-HW-05')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="toggleLogDrawer('BIST-HW-05')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">Test BIST-HW-05</span>
                                     <h4 class="text-xs font-bold">Lenz EMF Protection Slew-Rate</h4>
-                                    <p class="text-[10px] text-slate-400">Проверка программно-аппаратного ограничения скачков напряжения при резком сбросе ШИМ.</p>
+                                    <p class="text-[10px] text-slate-400">Проверка программно-аппаратного ограничения
+                                        скачков напряжения при резком сбросе ШИМ.</p>
                                 </div>
                                 <div class="flex items-center space-x-3">
-                                    <span id="bist-res-BIST-HW-05" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
-                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-05')" class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden" id="bist-retry-BIST-HW-05">Retry</button>
-                                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500 transition-transform duration-200" id="bist-arrow-BIST-HW-05"></i>
+                                    <span id="bist-res-BIST-HW-05"
+                                        class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                    <button onclick="event.stopPropagation(); retrySingleTest('BIST-HW-05')"
+                                        class="px-2 py-1 bg-blue-900/40 hover:bg-blue-600 text-[10px] font-bold rounded border border-blue-800 hidden"
+                                        id="bist-retry-BIST-HW-05">Retry</button>
+                                    <i data-lucide="chevron-down"
+                                        class="w-4 h-4 text-slate-500 transition-transform duration-200"
+                                        id="bist-arrow-BIST-HW-05"></i>
                                 </div>
                             </div>
-                            <div id="bist-log-BIST-HW-05" class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                            <div id="bist-log-BIST-HW-05"
+                                class="bg-slate-950 p-4 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
                                 Логи пусты.
                             </div>
                         </div>
@@ -483,7 +597,8 @@
                     <h3 class="text-xs font-bold text-blue-500 tracking-wider">SANDBOX R&D FAULT SIMULATOR</h3>
                     <div class="flex items-center space-x-4">
                         <span class="text-xs text-slate-400">Симулировать отказ на тесте:</span>
-                        <select id="fault-simulator-select" onchange="simulateFaultChange()" class="bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs font-mono text-red-400 focus:outline-none focus:border-red-600">
+                        <select id="fault-simulator-select" onchange="simulateFaultChange()"
+                            class="bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs font-mono text-red-400 focus:outline-none focus:border-red-600">
                             <option value="NONE">-- Без ошибок (Номинальный BIST) --</option>
                             <option value="BIST-HW-01">BIST-HW-01: PWM Sweep Fault</option>
                             <option value="BIST-HW-02">BIST-HW-02: Polarity Phase Fault</option>
@@ -500,73 +615,102 @@
                 <div class="glass-panel rounded-xl p-5 space-y-4">
                     <div class="flex justify-between items-center border-b border-slate-800 pb-3">
                         <div>
-                            <h3 class="text-sm font-bold text-cyan-400">POST-ASSEMBLY HARDWARE SUITE v1.0 (TEST-PA-01..05)</h3>
-                            <p class="text-[10px] text-slate-500">Финальная приёмо-сдаточная верификация собранного корпуса Базы: изоляция каналов, симметрия 12-секционных катушек, окно ToF (+45 мм), земля «Звезда» и термопродув.</p>
+                            <h3 class="text-sm font-bold text-cyan-400">POST-ASSEMBLY HARDWARE SUITE v1.0
+                                (TEST-PA-01..05)</h3>
+                            <p class="text-[10px] text-slate-500">Финальная приёмо-сдаточная верификация собранного
+                                корпуса Базы: изоляция каналов, симметрия 12-секционных катушек, окно ToF (+45 мм),
+                                земля «Звезда» и термопродув.</p>
                         </div>
-                        <button onclick="runPostAssemblySuite()" class="px-5 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded shadow-lg glow-blue transition flex items-center space-x-1.5">
+                        <button onclick="runPostAssemblySuite()"
+                            class="px-5 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded shadow-lg glow-blue transition flex items-center space-x-1.5">
                             <i data-lucide="play" class="w-4 h-4"></i><span>RUN POST-ASSEMBLY SUITE</span>
                         </button>
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div class="space-y-2">
-                            <div onclick="togglePaLogDrawer('TEST-PA-01')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="togglePaLogDrawer('TEST-PA-01')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-01</span>
                                     <h4 class="text-xs font-bold">Channel Isolation & Cross-Talk</h4>
-                                    <p class="text-[10px] text-slate-400">Импульс ШИМ на каждый боковой канал: dV[active] ≥ 0.12V, dV[other] ≤ 0.03V.</p>
+                                    <p class="text-[10px] text-slate-400">Импульс ШИМ на каждый боковой канал:
+                                        dV[active] ≥ 0.12V, dV[other] ≤ 0.03V.</p>
                                 </div>
-                                <span id="pa-res-TEST-PA-01" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                <span id="pa-res-TEST-PA-01"
+                                    class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
                             </div>
-                            <div id="pa-log-TEST-PA-01" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                            <div id="pa-log-TEST-PA-01"
+                                class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Тест не запускался.</div>
                         </div>
 
                         <div class="space-y-2">
-                            <div onclick="togglePaLogDrawer('TEST-PA-02')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="togglePaLogDrawer('TEST-PA-02')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-02</span>
                                     <h4 class="text-xs font-bold">Winding Symmetry & North Polarity</h4>
-                                    <p class="text-[10px] text-slate-400">Все 5 катушек формируют North-полюс, разброс амплитуды ≤ 50 мВ.</p>
+                                    <p class="text-[10px] text-slate-400">Все 5 катушек формируют North-полюс, разброс
+                                        амплитуды ≤ 50 мВ.</p>
                                 </div>
-                                <span id="pa-res-TEST-PA-02" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                <span id="pa-res-TEST-PA-02"
+                                    class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
                             </div>
-                            <div id="pa-log-TEST-PA-02" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                            <div id="pa-log-TEST-PA-02"
+                                class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Тест не запускался.</div>
                         </div>
 
                         <div class="space-y-2">
-                            <div onclick="togglePaLogDrawer('TEST-PA-03')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="togglePaLogDrawer('TEST-PA-03')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-03</span>
                                     <h4 class="text-xs font-bold">ToF Optical Window Clearance (+45.0 mm)</h4>
-                                    <p class="text-[10px] text-slate-400">Проверка отсутствия паразитных бликов корпуса (min ≥ 15 мм, std ≤ 3 мм).</p>
+                                    <p class="text-[10px] text-slate-400">Проверка отсутствия паразитных бликов корпуса
+                                        (min ≥ 15 мм, std ≤ 3 мм).</p>
                                 </div>
-                                <span id="pa-res-TEST-PA-03" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                <span id="pa-res-TEST-PA-03"
+                                    class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
                             </div>
-                            <div id="pa-log-TEST-PA-03" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                            <div id="pa-log-TEST-PA-03"
+                                class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Тест не запускался.</div>
                         </div>
 
                         <div class="space-y-2">
-                            <div onclick="togglePaLogDrawer('TEST-PA-04')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="togglePaLogDrawer('TEST-PA-04')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-04</span>
                                     <h4 class="text-xs font-bold">EMC Ground Bounce Stress</h4>
-                                    <p class="text-[10px] text-slate-400">Шум датчиков Холла при полной нагрузке PWM=460: RMS ≤ 12.0 мВ.</p>
+                                    <p class="text-[10px] text-slate-400">Шум датчиков Холла при полной нагрузке
+                                        PWM=460: RMS ≤ 12.0 мВ.</p>
                                 </div>
-                                <span id="pa-res-TEST-PA-04" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                <span id="pa-res-TEST-PA-04"
+                                    class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
                             </div>
-                            <div id="pa-log-TEST-PA-04" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                            <div id="pa-log-TEST-PA-04"
+                                class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Тест не запускался.</div>
                         </div>
 
                         <div class="space-y-2">
-                            <div onclick="togglePaLogDrawer('TEST-PA-05')" class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
+                            <div onclick="togglePaLogDrawer('TEST-PA-05')"
+                                class="bg-slate-950/80 p-4 rounded-xl border border-slate-900 flex justify-between items-center cursor-pointer hover:border-slate-700 transition">
                                 <div class="space-y-1">
                                     <span class="text-[9px] text-slate-500 uppercase block">TEST-PA-05</span>
                                     <h4 class="text-xs font-bold">Thermal Airflow & Gill Cooling</h4>
-                                    <p class="text-[10px] text-slate-400">Скорость нагрева при 30% PWM ≤ 0.25 °C/с с активным обдувом.</p>
+                                    <p class="text-[10px] text-slate-400">Скорость нагрева при 30% PWM ≤ 0.25 °C/с с
+                                        активным обдувом.</p>
                                 </div>
-                                <span id="pa-res-TEST-PA-05" class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
+                                <span id="pa-res-TEST-PA-05"
+                                    class="px-2.5 py-1 rounded text-[10px] font-bold bg-slate-900 text-slate-500 border border-slate-800">UNTESTED</span>
                             </div>
-                            <div id="pa-log-TEST-PA-05" class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">Тест не запускался.</div>
+                            <div id="pa-log-TEST-PA-05"
+                                class="bg-slate-950 p-3 rounded-xl border border-slate-900 text-[11px] font-mono whitespace-pre-line text-slate-400 hidden">
+                                Тест не запускался.</div>
                         </div>
                     </div>
                 </div>
@@ -575,34 +719,44 @@
             <!-- TAB 6: AI ASSISTANT (GEMINI PRO, SPU-WM30 AUDIO & OV2640 MJPEG HUD - WEB-CL-10 / WEB-CL-11) -->
             <div id="tab-content-ai" class="space-y-6 hidden">
                 <!-- V12 Live MJPEG Camera Stream & HUD Overlay Card (TASK-UI-5 / WEB-CL-11) -->
-                <div class="camera-stream-card camera-card glass-panel rounded-xl p-5 space-y-3 border border-cyan-500/40">
+                <div
+                    class="camera-stream-card camera-card glass-panel rounded-xl p-5 space-y-3 border border-cyan-500/40">
                     <div class="flex flex-wrap justify-between items-center border-b border-slate-800 pb-2 gap-2">
                         <div>
                             <h3 class="text-sm font-bold text-cyan-400">LIVE CAMERA STREAM (ESP32-CAM OV2640)</h3>
-                            <p class="text-[10px] text-slate-400">Поток MJPEG ≥ 15 FPS (&lt; 200 мс) с телеметрическим HUD и AI-инспекцией рабочей поверхности.</p>
+                            <p class="text-[10px] text-slate-400">Поток MJPEG ≥ 15 FPS (&lt; 200 мс) с телеметрическим
+                                HUD и AI-инспекцией рабочей поверхности.</p>
                         </div>
                         <div class="flex flex-wrap items-center gap-2">
-                            <button id="btn-toggle-stream" onclick="toggleCameraStream()" class="px-3 py-1 bg-cyan-950/80 hover:bg-cyan-700 border border-cyan-600 rounded text-[10px] font-bold text-cyan-300 transition">
+                            <button id="btn-toggle-stream" onclick="toggleCameraStream()"
+                                class="px-3 py-1 bg-cyan-950/80 hover:bg-cyan-700 border border-cyan-600 rounded text-[10px] font-bold text-cyan-300 transition">
                                 [TOGGLE STREAM]
                             </button>
-                            <button onclick="snapshotAndInspect()" class="px-3 py-1 bg-emerald-950/80 hover:bg-emerald-700 border border-emerald-600 rounded text-[10px] font-bold text-emerald-300 transition">
+                            <button onclick="snapshotAndInspect()"
+                                class="px-3 py-1 bg-emerald-950/80 hover:bg-emerald-700 border border-emerald-600 rounded text-[10px] font-bold text-emerald-300 transition">
                                 [SNAPSHOT &amp; INSPECT]
                             </button>
-                            <button id="btn-camera-res" onclick="toggleCameraResolution()" class="px-3 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-300 transition">
+                            <button id="btn-camera-res" onclick="toggleCameraResolution()"
+                                class="px-3 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded text-[10px] font-bold text-slate-300 transition">
                                 [RESOLUTION: 640x480 / 1600x1200]
                             </button>
-                            <button onclick="cleanCache()" class="px-3 py-1 bg-amber-950/80 hover:bg-amber-700 border border-amber-600 rounded text-[10px] font-bold text-amber-300 transition">
+                            <button onclick="cleanCache()"
+                                class="px-3 py-1 bg-amber-950/80 hover:bg-amber-700 border border-amber-600 rounded text-[10px] font-bold text-amber-300 transition">
                                 Clean Temp Cache &amp; Archive DB
                             </button>
                         </div>
                     </div>
-                    <div class="relative bg-slate-950 rounded-lg border border-slate-800 p-2 flex flex-col items-center">
-                        <img id="camera-stream-img" src="/api/agent/camera_stream" alt="Live Camera Stream" class="w-full max-w-[640px] h-auto rounded border border-slate-800 bg-black min-h-[160px] object-contain">
+                    <div
+                        class="relative bg-slate-950 rounded-lg border border-slate-800 p-2 flex flex-col items-center">
+                        <img id="camera-stream-img" src="/api/agent/camera_stream" alt="Live Camera Stream"
+                            class="w-full max-w-[640px] h-auto rounded border border-slate-800 bg-black min-h-[160px] object-contain">
                         <div id="ai-bbox-overlay" class="text-[10px] font-mono text-cyan-300 mt-1">
                             AI Vision HUD: READY (Resolution: <span id="cam-res-label">640x480</span>)
                         </div>
-                        <div class="hud-overlay text-xs font-mono text-emerald-400 mt-1 bg-slate-900/90 px-3 py-1.5 rounded border border-emerald-800/60">
-                            PITCH: <span id="pitch-val">0.0</span>° | ROLL: <span id="roll-val">0.0</span>° | YAW: <span id="yaw-val">0.0</span>° | TARGET Z: <span id="z-val">25.0</span>mm
+                        <div
+                            class="hud-overlay text-xs font-mono text-emerald-400 mt-1 bg-slate-900/90 px-3 py-1.5 rounded border border-emerald-800/60">
+                            PITCH: <span id="pitch-val">0.0</span>° | ROLL: <span id="roll-val">0.0</span>° | YAW: <span
+                                id="yaw-val">0.0</span>° | TARGET Z: <span id="z-val">25.0</span>mm
                         </div>
                     </div>
                 </div>
@@ -612,18 +766,22 @@
                     <div class="glass-panel rounded-xl p-5 space-y-4">
                         <div class="flex justify-between items-center border-b border-slate-800 pb-2">
                             <h3 class="text-sm font-bold text-emerald-400">GEMINI PRO COMPANION</h3>
-                            <button id="btn-ai-toggle" onclick="toggleActivateAI()" class="px-3 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 transition">
+                            <button id="btn-ai-toggle" onclick="toggleActivateAI()"
+                                class="px-3 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700 transition">
                                 ACTIVATE AI: OFF
                             </button>
                         </div>
 
                         <div class="space-y-2">
                             <label class="text-[11px] text-slate-400 block">Google Gemini API Key:</label>
-                            <input type="password" id="apiKeyInput" placeholder="AIzaSy..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
-                            <div class="text-[10px] text-slate-500">Saved key: <span id="masked-key-label" class="text-slate-300 font-bold">***</span></div>
+                            <input type="password" id="apiKeyInput" placeholder="AIzaSy..."
+                                class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
+                            <div class="text-[10px] text-slate-500">Saved key: <span id="masked-key-label"
+                                    class="text-slate-300 font-bold">***</span></div>
                         </div>
 
-                        <button onclick="connectAndSyncAI()" class="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg glow-green transition">
+                        <button onclick="connectAndSyncAI()"
+                            class="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg glow-green transition">
                             SAVE KEY & CONNECT API
                         </button>
 
@@ -642,22 +800,29 @@
                         <div class="border-t border-slate-800 pt-4 space-y-3">
                             <div class="flex justify-between items-center">
                                 <h4 class="text-xs font-bold text-slate-300">AI Bring-Up (TEST-AI-01..03)</h4>
-                                <button onclick="runAIBringupTests()" class="px-2.5 py-1 bg-emerald-950/60 hover:bg-emerald-700 border border-emerald-700 rounded text-[10px] font-bold text-emerald-300 transition">
+                                <button onclick="runAIBringupTests()"
+                                    class="px-2.5 py-1 bg-emerald-950/60 hover:bg-emerald-700 border border-emerald-700 rounded text-[10px] font-bold text-emerald-300 transition">
                                     Run Bring-Up
                                 </button>
                             </div>
                             <div class="space-y-2 text-[11px]">
-                                <div class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
+                                <div
+                                    class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
                                     <span>TEST-AI-01: Gemini API Sync</span>
-                                    <span id="test-ai-01-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
+                                    <span id="test-ai-01-badge"
+                                        class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
                                 </div>
-                                <div class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
+                                <div
+                                    class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
                                     <span>TEST-AI-02: ESP32-CAM Stream</span>
-                                    <span id="test-ai-02-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
+                                    <span id="test-ai-02-badge"
+                                        class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
                                 </div>
-                                <div class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
+                                <div
+                                    class="flex justify-between items-center bg-slate-950 p-2 rounded border border-slate-900">
                                     <span>TEST-AI-03: SPU-WM30 Loopback</span>
-                                    <span id="test-ai-03-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
+                                    <span id="test-ai-03-badge"
+                                        class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-500">UNTESTED</span>
                                 </div>
                             </div>
                         </div>
@@ -665,37 +830,47 @@
 
                     <!-- Center/Right Column: AI Thoughts & Chat Console -->
                     <div class="md:col-span-2 glass-panel rounded-xl p-5 flex flex-col justify-between h-[520px]">
-                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs text-emerald-400 font-mono flex items-center justify-between">
+                        <div
+                            class="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs text-emerald-400 font-mono flex items-center justify-between">
                             <div class="flex items-center space-x-2 truncate">
                                 <i data-lucide="brain-circuit" class="w-4 h-4 text-emerald-400 shrink-0"></i>
                                 <span id="aiThoughtsLog" class="truncate">ИИ-ассистент готов к работе.</span>
                             </div>
-                            <button onclick="refreshAIStatus()" class="text-[10px] text-slate-400 hover:text-white ml-2 shrink-0">Refresh</button>
+                            <button onclick="refreshAIStatus()"
+                                class="text-[10px] text-slate-400 hover:text-white ml-2 shrink-0">Refresh</button>
                         </div>
 
-                        <!-- AI Agent Console & Log History (V12) -->
-                        <div id="ai-logs" class="bg-slate-950/90 p-3 rounded-lg border border-slate-800 font-mono text-[11px] text-slate-400 my-2 max-h-24 overflow-y-auto space-y-1">
-                            <div>[SYSTEM V12 INITIALIZED] Ready for Voice &amp; Vision Interaction.</div>
-                            <div>[MEM_CHECK] Long-Term Memory SQLite: ai_history.db ACTIVE.</div>
-                            <div>[AUDIO] Spacetronik SPU-WM30 360° USB Mic Ready.</div>
-                        </div>
-
-                        <div id="chatHistoryLog" class="flex-1 overflow-y-auto space-y-3 my-2 pr-2 text-xs">
-                            <div class="bg-slate-900/90 p-3 rounded-lg border border-slate-800 max-w-[85%]">
-                                <span class="text-[10px] font-bold text-emerald-400 block mb-1">Antigravity Agent</span>
-                                Привет! Я парию над базой. Спроси меня «Какая высота?», «Что на столе?» или запусти пространственную спираль!
+                        <div id="chatHistoryLog" class="flex-1 overflow-y-auto space-y-3 my-4 pr-2 text-xs">
+                            <!-- AI Agent Console & Log History (V12) -->
+                            <div id="ai-logs"
+                                class="bg-slate-950/90 p-3 rounded-lg border border-slate-800 font-mono text-[11px] text-slate-400 my-2 max-h-24 overflow-y-auto space-y-1">
+                                <div>[SYSTEM V12 INITIALIZED] Ready for Voice &amp; Vision Interaction.</div>
+                                <div>[MEM_CHECK] Long-Term Memory SQLite: ai_history.db ACTIVE.</div>
+                                <div>[AUDIO] Spacetronik SPU-WM30 360° USB Mic Ready.</div>
                             </div>
-                        </div>
 
-                        <div class="flex space-x-2">
-                            <input type="text" id="chatInput" placeholder="Напишите сообщение Агенту (Tool Calling активен)..." class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500" onkeydown="if(event.key==='Enter') sendChatMessage()">
-                            <button onclick="sendChatMessage()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg glow-green transition">
-                                Отправить
-                            </button>
+                            <div id="chatHistoryLog" class="flex-1 overflow-y-auto space-y-3 my-2 pr-2 text-xs">
+                                <div class="bg-slate-900/90 p-3 rounded-lg border border-slate-800 max-w-[85%]">
+                                    <span class="text-[10px] font-bold text-emerald-400 block mb-1">Antigravity
+                                        Agent</span>
+                                    Привет! Я парию над базой. Спроси меня «Какая высота?», «Что на столе?» или запусти
+                                    пространственную спираль!
+                                </div>
+                            </div>
+
+                            <div class="flex space-x-2">
+                                <input type="text" id="chatInput"
+                                    placeholder="Напишите сообщение Агенту (Tool Calling активен)..."
+                                    class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+                                    onkeydown="if(event.key==='Enter') sendChatMessage()">
+                                <button onclick="sendChatMessage()"
+                                    class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg glow-green transition">
+                                    Отправить
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
         </section>
 
         <!-- RIGHT PANEL -->
@@ -709,9 +884,12 @@
                     <span class="text-xs text-slate-400">Est. Coils Temp:</span>
                     <span class="text-xl font-bold text-amber-500" id="thermal-temp">25.0 °C</span>
                 </div>
-                <div class="flex justify-between items-center bg-slate-950 px-3 py-2 rounded border border-slate-900 text-xs">
+                <div
+                    class="flex justify-between items-center bg-slate-950 px-3 py-2 rounded border border-slate-900 text-xs">
                     <span class="text-slate-400">Protection Mode:</span>
-                    <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-green-950 text-green-400 border border-green-800" id="thermal-mode">NOMINAL</span>
+                    <span
+                        class="px-2 py-0.5 rounded text-[9px] font-bold bg-green-950 text-green-400 border border-green-800"
+                        id="thermal-mode">NOMINAL</span>
                 </div>
             </div>
 
@@ -729,9 +907,11 @@
                     <span class="text-xs text-slate-400">TVS Rail Clamp (8.0V):</span>
                     <span class="text-xs font-bold text-emerald-400">SECURED (SMBJ12A)</span>
                 </div>
-                <div class="flex justify-between items-center bg-slate-950 px-3 py-2 rounded border border-slate-900 text-xs">
+                <div
+                    class="flex justify-between items-center bg-slate-950 px-3 py-2 rounded border border-slate-900 text-xs">
                     <span class="text-slate-400">Hardware Protection:</span>
-                    <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">ACTIVE</span>
+                    <span
+                        class="px-2 py-0.5 rounded text-[9px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">ACTIVE</span>
                 </div>
             </div>
 
@@ -741,14 +921,15 @@
                     <h3 class="text-xs font-bold text-blue-400 tracking-wider">PID DYNAMIC TUNING</h3>
                     <i data-lucide="sliders" class="w-4 h-4 text-blue-500"></i>
                 </div>
-                
+
                 <div class="space-y-4">
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <span class="text-slate-400">Proportional (Kp)</span>
                             <span class="font-bold text-blue-400" id="kp-val">12.50</span>
                         </div>
-                        <input type="range" id="slider-kp" min="0" max="50" step="0.1" value="12.5" class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
+                        <input type="range" id="slider-kp" min="0" max="50" step="0.1" value="12.5"
+                            class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
                     </div>
 
                     <div class="space-y-1">
@@ -756,7 +937,8 @@
                             <span class="text-slate-400">Integral (Ki)</span>
                             <span class="font-bold text-blue-400" id="ki-val">0.05</span>
                         </div>
-                        <input type="range" id="slider-ki" min="0" max="5" step="0.01" value="0.05" class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
+                        <input type="range" id="slider-ki" min="0" max="5" step="0.01" value="0.05"
+                            class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
                     </div>
 
                     <div class="space-y-1">
@@ -764,11 +946,13 @@
                             <span class="text-slate-400">Derivative (Kd)</span>
                             <span class="font-bold text-blue-400" id="kd-val">8.20</span>
                         </div>
-                        <input type="range" id="slider-kd" min="0" max="30" step="0.1" value="8.2" class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
+                        <input type="range" id="slider-kd" min="0" max="30" step="0.1" value="8.2"
+                            class="w-full accent-blue-500 bg-slate-950 h-1 rounded" oninput="sendPidTunings()">
                     </div>
                 </div>
 
-                <button onclick="commitPid()" class="w-full py-2.5 bg-blue-900/40 hover:bg-blue-600 border border-blue-700 hover:border-blue-500 text-xs font-bold rounded tracking-wider transition">
+                <button onclick="commitPid()"
+                    class="w-full py-2.5 bg-blue-900/40 hover:bg-blue-600 border border-blue-700 hover:border-blue-500 text-xs font-bold rounded tracking-wider transition">
                     COMMIT DYNAMIC COEFFICIENTS
                 </button>
             </div>
@@ -776,28 +960,35 @@
     </main>
 
     <!-- CALIBRATION WIZARD MODAL V10.0 -->
-    <div id="calib-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center hidden">
+    <div id="calib-modal"
+        class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center hidden">
         <div class="glass-panel max-w-2xl w-full p-8 rounded-2xl border border-cyan-900/50 space-y-6 glow-blue">
             <header class="flex justify-between items-center border-b border-slate-800 pb-4">
                 <h1 class="text-xl font-bold text-cyan-400">Разъёмный калибровочный стенд (FSM)</h1>
-                <span id="calib-fsm-badge" class="px-3 py-1 text-xs font-mono rounded bg-slate-800 text-slate-300">FSM: PARKED</span>
+                <span id="calib-fsm-badge" class="px-3 py-1 text-xs font-mono rounded bg-slate-800 text-slate-300">FSM:
+                    PARKED</span>
             </header>
-            
-            <p id="calib-fsm-log" class="text-sm font-mono text-cyan-300 bg-slate-950 p-4 rounded-lg border border-slate-800 flex items-center">
+
+            <p id="calib-fsm-log"
+                class="text-sm font-mono text-cyan-300 bg-slate-950 p-4 rounded-lg border border-slate-800 flex items-center">
                 Ожидание данных...
             </p>
-            
+
             <div class="flex gap-4 pt-4 border-t border-slate-800">
-                <button onclick="startCalib()" class="flex-1 py-3 bg-cyan-600 hover:bg-cyan-500 font-bold rounded transition text-sm">
+                <button onclick="startCalib()"
+                    class="flex-1 py-3 bg-cyan-600 hover:bg-cyan-500 font-bold rounded transition text-sm">
                     1. Запуск калибровки
                 </button>
-                <button id="btn-calib-confirm" onclick="confirmRemovedCalib()" disabled class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 font-bold rounded transition text-sm">
+                <button id="btn-calib-confirm" onclick="confirmRemovedCalib()" disabled
+                    class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 font-bold rounded transition text-sm">
                     2. Подставка удалена
                 </button>
-                <button onclick="cancelCalib()" class="flex-1 py-3 bg-rose-600 hover:bg-rose-500 font-bold rounded transition text-sm">
+                <button onclick="cancelCalib()"
+                    class="flex-1 py-3 bg-rose-600 hover:bg-rose-500 font-bold rounded transition text-sm">
                     Отмена / Спуск
                 </button>
-                <button onclick="closeCalibrationWizard()" class="py-3 px-6 bg-slate-700 hover:bg-slate-600 font-bold rounded transition text-sm text-slate-300">
+                <button onclick="closeCalibrationWizard()"
+                    class="py-3 px-6 bg-slate-700 hover:bg-slate-600 font-bold rounded transition text-sm text-slate-300">
                     Закрыть
                 </button>
             </div>
@@ -805,49 +996,65 @@
     </div>
 
     <!-- DOUBLE CONFIRMATION BYPASS MODAL -->
-    <div id="bypass-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div id="bypass-modal"
+        class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
         <div class="glass-panel max-w-md w-full p-6 rounded-2xl border-amber-900/50 space-y-4 glow-amber">
             <div class="flex items-center space-x-3 text-amber-500">
                 <i data-lucide="shield-alert" class="w-8 h-8"></i>
                 <h3 class="text-md font-bold">MANUAL BYPASS SYSTEM LOCK?</h3>
             </div>
             <p class="text-xs text-slate-400 leading-relaxed">
-                Внимание! Активация ручного обхода (Bypass) принудительно разблокирует подачу напряжения на силовые катушки базы в обход систем самодиагностики BIST.
-                Это допускается только в случае R&D макетирования, когда вы лично проверили полярность обмоток и исправность защитных NC-реле сферы!
+                Внимание! Активация ручного обхода (Bypass) принудительно разблокирует подачу напряжения на силовые
+                катушки базы в обход систем самодиагностики BIST.
+                Это допускается только в случае R&D макетирования, когда вы лично проверили полярность обмоток и
+                исправность защитных NC-реле сферы!
             </p>
             <div class="bg-slate-950 p-3 rounded-lg border border-slate-900 flex items-start space-x-2.5">
-                <input type="checkbox" id="bypass-chk-agree" onchange="toggleBypassSubmit()" class="mt-0.5 rounded border-slate-800 bg-slate-900 text-amber-500 focus:ring-0 focus:ring-offset-0">
-                <label for="bypass-chk-agree" class="text-[10px] text-slate-400 leading-snug cursor-pointer select-none">
-                    Я физически замерил цепи, полярность намотки катушек базы и реле Агента и беру на себя ответственность за возможный перегрев или КЗ.
+                <input type="checkbox" id="bypass-chk-agree" onchange="toggleBypassSubmit()"
+                    class="mt-0.5 rounded border-slate-800 bg-slate-900 text-amber-500 focus:ring-0 focus:ring-offset-0">
+                <label for="bypass-chk-agree"
+                    class="text-[10px] text-slate-400 leading-snug cursor-pointer select-none">
+                    Я физически замерил цепи, полярность намотки катушек базы и реле Агента и беру на себя
+                    ответственность за возможный перегрев или КЗ.
                 </label>
             </div>
             <div class="flex space-x-3 pt-2">
-                <button onclick="closeBypassModal()" class="flex-1 py-2 border border-slate-800 text-slate-400 hover:text-white rounded text-xs font-bold transition">CANCEL</button>
-                <button id="btn-bypass-confirm" onclick="confirmBypass()" class="flex-1 py-2 bg-amber-800 text-slate-500 rounded text-xs font-bold cursor-not-allowed transition" disabled>CONFIRM BYPASS</button>
+                <button onclick="closeBypassModal()"
+                    class="flex-1 py-2 border border-slate-800 text-slate-400 hover:text-white rounded text-xs font-bold transition">CANCEL</button>
+                <button id="btn-bypass-confirm" onclick="confirmBypass()"
+                    class="flex-1 py-2 bg-amber-800 text-slate-500 rounded text-xs font-bold cursor-not-allowed transition"
+                    disabled>CONFIRM BYPASS</button>
             </div>
         </div>
     </div>
 
     <!-- OPERATOR API TOKEN MODAL (review A1) -->
-    <div id="auth-token-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div id="auth-token-modal"
+        class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
         <div class="glass-panel max-w-md w-full p-6 rounded-2xl border-blue-900/50 space-y-4 glow-blue">
             <div class="flex items-center space-x-3 text-blue-400">
                 <i data-lucide="key-round" class="w-7 h-7"></i>
                 <h3 class="text-md font-bold">OPERATOR API BEARER TOKEN</h3>
             </div>
             <p class="text-xs text-slate-400 leading-relaxed">
-                Введите токен оператора (<code class="text-blue-300">LEVITATION_API_TOKEN</code> или из файла <code class="text-blue-300">api_token</code>) для аутентификации REST-запросов и WebSocket-телеметрии.
+                Введите токен оператора (<code class="text-blue-300">LEVITATION_API_TOKEN</code> или из файла <code
+                    class="text-blue-300">api_token</code>) для аутентификации REST-запросов и WebSocket-телеметрии.
             </p>
-            <input type="password" id="operator-token-input" placeholder="Paste operator token..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500">
+            <input type="password" id="operator-token-input" placeholder="Paste operator token..."
+                class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500">
             <div class="flex space-x-3 pt-2">
-                <button onclick="closeAuthTokenModal()" class="flex-1 py-2 border border-slate-800 text-slate-400 hover:text-white rounded text-xs font-bold transition">CANCEL</button>
-                <button onclick="saveOperatorToken()" class="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold transition glow-blue">SAVE & RECONNECT</button>
+                <button onclick="closeAuthTokenModal()"
+                    class="flex-1 py-2 border border-slate-800 text-slate-400 hover:text-white rounded text-xs font-bold transition">CANCEL</button>
+                <button onclick="saveOperatorToken()"
+                    class="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold transition glow-blue">SAVE
+                    & RECONNECT</button>
             </div>
         </div>
     </div>
 
     <!-- FOOTER -->
-    <footer class="border-t border-slate-900 bg-slate-950/80 px-6 py-3.5 text-center text-[10px] text-slate-500 flex justify-between items-center">
+    <footer
+        class="border-t border-slate-900 bg-slate-950/80 px-6 py-3.5 text-center text-[10px] text-slate-500 flex justify-between items-center">
         <span>R&D PHASE 4 SYSTEM CORE // RASPBERRY PI 5 INSULATED</span>
         <span>NO SYSTEM THREAD DELAYS DETECTED</span>
     </footer>
@@ -941,7 +1148,7 @@
                     return;
                 }
                 updateTelemetryUI(data);
-                
+
                 const now = Date.now();
                 document.getElementById('ping-time').innerText = (now - lastPing) + " ms";
                 lastPing = now;
@@ -951,9 +1158,9 @@
         function switchTab(tabName) {
             document.getElementById(`tab-content-${currentTab}`).classList.add('hidden');
             document.getElementById(`tab-btn-${currentTab}`).className = "flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800";
-            
+
             currentTab = tabName;
-            
+
             document.getElementById(`tab-content-${currentTab}`).classList.remove('hidden');
             const activeClass = tabName === 'ai'
                 ? "flex-1 py-2.5 px-3 rounded-md text-xs font-medium transition duration-200 bg-emerald-600 text-white shadow-lg glow-green"
@@ -988,9 +1195,9 @@
             document.getElementById('base-z').innerText = data.base.position_xyz[2].toFixed(2) + " mm";
             document.getElementById('base-x').innerText = data.base.position_xyz[0].toFixed(2) + " mm";
             document.getElementById('base-y').innerText = data.base.position_xyz[1].toFixed(2) + " mm";
-            
+
             const height = data.base.position_xyz[2];
-            const weight = 100 / (1 + Math.exp(-0.2 * (height - 50))); 
+            const weight = 100 / (1 + Math.exp(-0.2 * (height - 50)));
             document.getElementById('fusion-weight-bar').style.width = weight + "%";
 
             // COIL PWMs
@@ -1039,7 +1246,7 @@
             const wifiBadge = document.getElementById('wifi-status');
             if (wifiBadge && data.agent) {
                 const isConn = data.agent.wifi_status === 'Connected';
-                wifiBadge.className = isConn 
+                wifiBadge.className = isConn
                     ? "px-2.5 py-1 rounded text-[11px] font-bold bg-emerald-950/60 border border-emerald-500/40 text-emerald-400"
                     : "px-2.5 py-1 rounded text-[11px] font-bold bg-red-950/60 border border-red-500/40 text-red-400";
                 wifiBadge.innerText = isConn ? "HEARTBEAT: OK (0.01s)" : "HEARTBEAT: DISCONNECTED";
@@ -1077,7 +1284,7 @@
                     lockTxt.innerText = "POWER INTERLOCK: ACTIVE & SECURED";
                     lockTxt.className = "text-emerald-400 font-bold";
                 }
-                
+
                 btnTakeoff.disabled = false;
                 btnTakeoff.className = "px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold rounded shadow-lg glow-green cursor-pointer transition";
                 btnTakeoff.innerText = "EXECUTE";
@@ -1157,13 +1364,13 @@
                 if (data.shutdown && data.shutdown.emergency_reason) {
                     document.getElementById('shutdown-desc').innerText = `Аварийная посадка: ${data.shutdown.emergency_reason}`;
                 }
-                
+
                 const container = document.getElementById('shutdown-steps-list');
                 container.innerHTML = '';
                 pipe.steps.forEach(step => {
                     const stepRow = document.createElement('div');
                     stepRow.className = "flex justify-between items-center py-2 border-b border-slate-900 text-xs";
-                    
+
                     let statusBadge = '';
                     if (step.status === 'DONE') {
                         statusBadge = '<span class="text-emerald-400 font-bold flex items-center space-x-1"><i data-lucide="check-circle" class="w-3.5 h-3.5 mr-1"></i>SECURED</span>';
@@ -1172,7 +1379,7 @@
                     } else {
                         statusBadge = '<span class="text-slate-500">PENDING</span>';
                     }
-                    
+
                     const descSpan = document.createElement('span');
                     descSpan.className = "text-slate-300 font-medium";
                     descSpan.textContent = step.desc;
@@ -1183,7 +1390,7 @@
                     container.appendChild(stepRow);
                 });
                 lucide.createIcons();
-                
+
                 // Проверяем флаг безопасного выключения
                 const safeToUnplug = data.shutdown.safe_to_unplug;
                 if (safeToUnplug) {
@@ -1197,19 +1404,19 @@
                 }
             } else {
                 shutdownOverlay.classList.add('hidden');
-                
+
                 // Обычный рендеринг пайплайнов
                 if (pipe.active_id !== "NONE") {
                     pipePanel.classList.remove('hidden');
                     document.getElementById('pipeline-title').innerText = pipe.active_id;
                     document.getElementById('pipeline-general-status').innerText = pipe.status;
-                    
+
                     const container = document.getElementById('pipeline-steps-container');
                     container.innerHTML = '';
                     pipe.steps.forEach(step => {
                         const stepRow = document.createElement('div');
                         stepRow.className = "flex justify-between items-center bg-slate-950/80 p-3 rounded-lg border border-slate-900 text-xs";
-                        
+
                         let statusBadge = '';
                         if (step.status === 'DONE') {
                             statusBadge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-green-950 text-green-400 border border-green-800">COMPLETED</span>';
@@ -1309,13 +1516,13 @@
                 method: 'POST',
                 body: JSON.stringify({ command: pipelineId })
             })
-            .then(res => res.json())
-            .then(data => {
-                if (data.detail) {
-                    alert(`Pipeline denied: ${data.detail}`);
-                }
-            })
-            .catch(err => console.error("Error triggering pipeline:", err));
+                .then(res => res.json())
+                .then(data => {
+                    if (data.detail) {
+                        alert(`Pipeline denied: ${data.detail}`);
+                    }
+                })
+                .catch(err => console.error("Error triggering pipeline:", err));
         }
 
         function retrySingleTest(testId) {
@@ -1323,17 +1530,17 @@
                 method: 'POST',
                 body: JSON.stringify({ test_id: testId })
             })
-            .then(res => res.json())
-            .catch(err => console.error("Error retrying test:", err));
+                .then(res => res.json())
+                .catch(err => console.error("Error retrying test:", err));
         }
 
         function runPostAssemblySuite() {
             apiFetch('/api/bist/post_assembly_test', { method: 'POST' })
-            .then(res => res.json())
-            .then(data => {
-                if (data.detail) alert(`Post-Assembly denied: ${data.detail}`);
-            })
-            .catch(err => console.error("Error starting Post-Assembly BIST:", err));
+                .then(res => res.json())
+                .then(data => {
+                    if (data.detail) alert(`Post-Assembly denied: ${data.detail}`);
+                })
+                .catch(err => console.error("Error starting Post-Assembly BIST:", err));
         }
 
         // --- AI ASSISTANT CONTROLS (WEB-CL-10) ---
@@ -1564,6 +1771,7 @@
                 if (data.detail && !data.status) {
                     alert(`Ошибка очистки: ${data.detail}`);
                 } else {
+                    appendChatBubble('assistant', `[Maintenance]: ${data.detail || data.message}`);
                     appendChatBubble('assistant', `[Maintenance]: ${msg}`);
                 }
             } catch (err) {
@@ -1587,13 +1795,13 @@
             document.getElementById('calib-modal').classList.add('hidden');
         }
         async function startCalib() {
-            await apiFetch('/api/calibration/start', {method: 'POST'});
+            await apiFetch('/api/calibration/start', { method: 'POST' });
         }
         async function confirmRemovedCalib() {
-            await apiFetch('/api/calibration/confirm_stand_removed', {method: 'POST'});
+            await apiFetch('/api/calibration/confirm_stand_removed', { method: 'POST' });
         }
         async function cancelCalib() {
-            await apiFetch('/api/calibration/cancel', {method: 'POST'});
+            await apiFetch('/api/calibration/cancel', { method: 'POST' });
         }
 
         function openBypassModal() {
@@ -1624,11 +1832,11 @@
                 method: 'POST',
                 body: JSON.stringify({ override: true, confirm: "I_ACCEPT_THE_RISK" })
             })
-            .then(res => res.json())
-            .then(data => {
-                closeBypassModal();
-            })
-            .catch(err => console.error("Bypass failed:", err));
+                .then(res => res.json())
+                .then(data => {
+                    closeBypassModal();
+                })
+                .catch(err => console.error("Bypass failed:", err));
         }
 
         function simulateFaultChange() {
@@ -1637,8 +1845,8 @@
                 method: 'POST',
                 body: JSON.stringify({ test_id: selected === "NONE" ? null : selected })
             })
-            .then(res => res.json())
-            .catch(err => console.error("Simulator request failed:", err));
+                .then(res => res.json())
+                .catch(err => console.error("Simulator request failed:", err));
         }
 
         function confirmShutdown() {
@@ -1657,4 +1865,5 @@
         };
     </script>
 </body>
+
 </html>
